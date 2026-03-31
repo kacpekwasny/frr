@@ -674,6 +674,8 @@ struct nb_node {
 #define F_NB_NODE_KEYLESS_LIST 0x02
 /* Ignore config callbacks for this node */
 #define F_NB_NODE_IGNORE_CFG_CBS 0x04
+/* Ignore state callbacks for this node */
+#define F_NB_NODE_HAS_GET_TREE 0x08
 
 /*
  * HACK: old gcc versions (< 5.x) have a bug that prevents C99 flexible arrays

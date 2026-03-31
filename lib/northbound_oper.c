@@ -380,10 +380,17 @@ static enum nb_error nb_op_xpath_to_trunk(const char *xpath_in, char **xpath_out
 					  struct lyd_node **trunk)
 {
 	char *xpath = NULL;
+	uint32_t llopts = 0;
 	enum nb_error ret = NB_OK;
 	LY_ERR err;
 
+	/*
+	 * Try to instantiate ever shortened paths until one succeeds, suppress
+	 * libyang logs for the expected errors along the way.
+	 */
 	darr_in_strdup(xpath, xpath_in);
+
+	ly_temp_log_options(&llopts);
 	for (;;) {
 		err = lyd_new_path2(NULL, ly_native_ctx, xpath, NULL, 0, 0,
 				    LYD_NEW_PATH_UPDATE, NULL, trunk);
@@ -394,6 +401,8 @@ static enum nb_error nb_op_xpath_to_trunk(const char *xpath_in, char **xpath_out
 		if (ret != NB_OK)
 			break;
 	}
+	ly_temp_log_options(NULL);
+
 	if (ret == NB_OK)
 		*xpath_out = xpath;
 	else
@@ -663,8 +672,12 @@ static enum nb_error nb_op_iter_leaf(struct nb_op_yield_state *ys,
 		return NB_OK;
 
 	/* Check for new simple get */
-	if (nb_node->cbs.get)
+	if (nb_node->cbs.get) {
+		/* XXX: need to run through translator */
+		DEBUGD(&nb_dbg_cbs_state, "northbound callback (get): xpath [%s] list_entry [%p]",
+		       xpath, ni->list_entry);
 		return nb_node->cbs.get(nb_node, ni->list_entry, ni->inner);
+	}
 
 	data = nb_callback_get_elem(nb_node, xpath, ni->list_entry);
 	if (data == NULL)
@@ -686,6 +699,18 @@ static enum nb_error nb_op_iter_leaf(struct nb_op_yield_state *ys,
 	return ret;
 }
 
+static enum nb_error nb_op_libyang_cb_get_leaflist(struct nb_op_yield_state *ys,
+						   const struct nb_node *nb_node,
+						   struct lyd_node *parent,
+						   const char *xpath)
+{
+	/* TODO: full get_tree infrastructure from stable/10.4 not yet ported */
+	flog_warn(EC_LIB_NB_OPERATIONAL_DATA,
+		  "%s: get_tree not yet supported for leaflist: %s",
+		  __func__, xpath);
+	return NB_ERR;
+}
+
 static enum nb_error nb_op_iter_leaflist(struct nb_op_yield_state *ys,
 					 const struct nb_node *nb_node,
 					 const char *xpath)
@@ -700,8 +725,16 @@ static enum nb_error nb_op_iter_leaflist(struct nb_op_yield_state *ys,
 		return NB_OK;
 
 	/* Check for new simple get */
-	if (nb_node->cbs.get)
+	if (nb_node->cbs.get) {
+		/* XXX: need to run through translator */
+		DEBUGD(&nb_dbg_cbs_state, "northbound callback (get): xpath [%s] list_entry [%p]",
+		       xpath, ni->list_entry);
 		return nb_node->cbs.get(nb_node, ni->list_entry, ni->inner);
+	}
+
+	if (CHECK_FLAG(nb_node->flags, F_NB_NODE_HAS_GET_TREE))
+		/* XXX: need to run through translator */
+		return nb_op_libyang_cb_get_leaflist(ys, nb_node, ni->inner, xpath);
 
 	do {
 		struct yang_data *data;
