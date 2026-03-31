@@ -20,6 +20,45 @@ import babeltrace
 
 
 ########################### common parsers - start ############################
+
+
+def print_location_gr_deferral_timer_start(field_val):
+    if field_val == 1:
+        return "Tier 1 deferral timer start"
+    elif field_val == 2:
+        return "Tier 2 deferral timer start"
+
+
+def print_location_gr_eors(field_val):
+    if field_val == 1:
+        return "Check all EORs"
+    elif field_val == 2:
+        return "All dir conn EORs rcvd"
+    elif field_val == 3:
+        return "All multihop EORs NOT rcvd"
+    elif field_val == 4:
+        return "All EORs rcvd"
+    elif field_val == 5:
+        return "No multihop EORs pending"
+    elif field_val == 6:
+        return "EOR rcvd,check path select"
+    elif field_val == 7:
+        return "Do deferred path selection"
+
+
+def print_location_gr_eor_peer(field_val):
+    if field_val == 1:
+        return "EOR awaited from"
+    elif field_val == 2:
+        return "EOR ignore"
+    elif field_val == 3:
+        return "Multihop EOR awaited"
+    elif field_val == 4:
+        return "Ignore EOR rcvd after tier1 expiry"
+    elif field_val == 5:
+        return "Dir conn EOR awaited"
+
+
 def print_ip_addr(field_val):
     """
     pretty print "struct ipaddr"
@@ -104,6 +143,13 @@ def print_family_str(field_val):
         cmd_str = "Invalid family"
 
     return cmd_str
+
+
+def location_gr_client_not_found(field_val):
+    if field_val == 1:
+        return "Process from GR queue"
+    elif field_val == 2:
+        return "Stale route delete from table"
 
 
 ############################ common parsers - end #############################
@@ -310,6 +356,69 @@ def parse_frr_bgp_evpn_withdraw_type5(event):
     """
     field_parsers = {"ip": print_ip_addr}
 
+
+def parse_frr_bgp_gr_deferral_timer_start(event):
+    field_parsers = {
+        "location": print_location_gr_deferral_timer_start,
+        "afi": print_afi_string,
+        "safi": print_safi_string,
+    }
+
+    parse_event(event, field_parsers)
+
+
+def parse_frr_bgp_gr_deferral_timer_expiry(event):
+    field_parsers = {"afi": print_afi_string, "safi": print_safi_string}
+
+    parse_event(event, field_parsers)
+
+
+def parse_frr_bgp_gr_eors(event):
+    field_parsers = {
+        "location": print_location_gr_eors,
+        "afi": print_afi_string,
+        "safi": print_safi_string,
+    }
+
+    parse_event(event, field_parsers)
+
+
+def parse_frr_bgp_gr_eor_peer(event):
+    field_parsers = {
+        "location": print_location_gr_eor_peer,
+        "afi": print_afi_string,
+        "safi": print_safi_string,
+    }
+
+    parse_event(event, field_parsers)
+
+
+def parse_frr_bgp_gr_start_deferred_path_selection(event):
+    field_parsers = {"afi": print_afi_string, "safi": print_safi_string}
+
+    parse_event(event, field_parsers)
+
+
+def parse_frr_bgp_gr_send_fbit_capability(event):
+    field_parsers = {"afi": print_afi_string, "safi": print_safi_string}
+
+    parse_event(event, field_parsers)
+
+
+def parse_frr_bgp_gr_continue_deferred_path_selection(event):
+    field_parsers = {"afi": print_afi_string, "safi": print_safi_string}
+
+    parse_event(event, field_parsers)
+
+
+def parse_frr_bgp_gr_zebra_update(event):
+    field_parsers = {"afi": print_afi_string, "safi": print_safi_string}
+
+    parse_event(event, field_parsers)
+
+
+def parse_frr_zebra_gr_client_not_found(event):
+    field_parsers = {"location": location_gr_client_not_found}
     parse_event(event, field_parsers)
 
 
@@ -320,41 +429,100 @@ def main():
     """
     FRR lttng trace output parser; babel trace plugin
     """
-    event_parsers = {"frr_bgp:evpn_mac_ip_zsend":
-                     parse_frr_bgp_evpn_mac_ip_zsend,
-                     "frr_bgp:evpn_bum_vtep_zsend":
-                     parse_frr_bgp_evpn_bum_vtep_zsend,
-                     "frr_bgp:evpn_mh_nh_rmac_zsend":
-                     parse_frr_bgp_evpn_mh_nh_rmac_send,
-                     "frr_bgp:evpn_mh_local_es_add_zrecv":
-                     parse_frr_bgp_evpn_mh_local_es_add_zrecv,
-                     "frr_bgp:evpn_mh_local_es_del_zrecv":
-                     parse_frr_bgp_evpn_mh_local_es_del_zrecv,
-                     "frr_bgp:evpn_mh_local_es_evi_add_zrecv":
-                     parse_frr_bgp_evpn_mh_local_es_evi_add_zrecv,
-                     "frr_bgp:evpn_mh_local_es_evi_del_zrecv":
-                     parse_frr_bgp_evpn_mh_local_es_evi_del_zrecv,
-                     "frr_bgp:evpn_mh_es_evi_vtep_add":
-                     parse_frr_bgp_evpn_mh_es_evi_vtep_add,
-                     "frr_bgp:evpn_mh_es_evi_vtep_del":
-                     parse_frr_bgp_evpn_mh_es_evi_vtep_del,
-                     "frr_bgp:evpn_mh_local_ead_es_evi_route_upd":
-                     parse_frr_bgp_evpn_mh_local_ead_es_evi_route_upd,
-                     "frr_bgp:evpn_mh_local_ead_es_evi_route_del":
-                     parse_frr_bgp_evpn_mh_local_ead_es_evi_route_del,
-                     "frr_bgp:evpn_local_vni_add_zrecv":
-                     parse_frr_bgp_evpn_local_vni_add_zrecv,
-                     "frr_bgp:evpn_local_l3vni_add_zrecv":
-                     parse_frr_bgp_evpn_local_l3vni_add_zrecv,
-                     "frr_bgp:evpn_local_macip_add_zrecv":
-                     parse_frr_bgp_evpn_local_macip_add_zrecv,
-                     "frr_bgp:evpn_local_macip_del_zrecv":
-                     parse_frr_bgp_evpn_local_macip_del_zrecv,
-                     "frr_bgp:evpn_advertise_type5":
-                     parse_frr_bgp_evpn_advertise_type5,
-                     "frr_bgp:evpn_withdraw_type5":
-                     parse_frr_bgp_evpn_withdraw_type5,
-}
+    event_parsers = {
+        "frr_bgp:evpn_mac_ip_zsend": parse_frr_bgp_evpn_mac_ip_zsend,
+        "frr_bgp:evpn_bum_vtep_zsend": parse_frr_bgp_evpn_bum_vtep_zsend,
+        "frr_bgp:evpn_mh_nh_rmac_zsend": parse_frr_bgp_evpn_mh_nh_rmac_send,
+        "frr_bgp:evpn_mh_local_es_add_zrecv": parse_frr_bgp_evpn_mh_local_es_add_zrecv,
+        "frr_bgp:evpn_mh_local_es_del_zrecv": parse_frr_bgp_evpn_mh_local_es_del_zrecv,
+        "frr_bgp:evpn_mh_local_es_evi_add_zrecv": parse_frr_bgp_evpn_mh_local_es_evi_add_zrecv,
+        "frr_bgp:evpn_mh_local_es_evi_del_zrecv": parse_frr_bgp_evpn_mh_local_es_evi_del_zrecv,
+        "frr_bgp:evpn_mh_es_evi_vtep_add": parse_frr_bgp_evpn_mh_es_evi_vtep_add,
+        "frr_bgp:evpn_mh_es_evi_vtep_del": parse_frr_bgp_evpn_mh_es_evi_vtep_del,
+        "frr_bgp:evpn_mh_local_ead_es_evi_route_upd": parse_frr_bgp_evpn_mh_local_ead_es_evi_route_upd,
+        "frr_bgp:evpn_mh_local_ead_es_evi_route_del": parse_frr_bgp_evpn_mh_local_ead_es_evi_route_del,
+        "frr_bgp:evpn_local_vni_add_zrecv": parse_frr_bgp_evpn_local_vni_add_zrecv,
+        "frr_bgp:evpn_local_l3vni_add_zrecv": parse_frr_bgp_evpn_local_l3vni_add_zrecv,
+        "frr_bgp:evpn_local_macip_add_zrecv": parse_frr_bgp_evpn_local_macip_add_zrecv,
+        "frr_bgp:evpn_local_macip_del_zrecv": parse_frr_bgp_evpn_local_macip_del_zrecv,
+        "frr_bgp:evpn_advertise_type5": parse_frr_bgp_evpn_advertise_type5,
+        "frr_bgp:evpn_withdraw_type5": parse_frr_bgp_evpn_withdraw_type5,
+        "frr_bgp:session_state_change": parse_frr_bgp_session_state_change,
+        "frr_bgp:connection_attempt": parse_frr_bgp_connection_attempt,
+        "frr_bgp:fsm_event": parse_frr_bgp_fsm_event,
+        "frr_bgp:bgp_err_str": parse_frr_bgp_bgp_err_str,
+        "frr_bgp:bgp_zebra_process_local_ip_prefix_zrecv": parse_frr_bgp_bgp_zebra_process_local_ip_prefix_zrecv,
+        "frr_bgp:bgp_zebra_vxlan_flood_control": parse_frr_bgp_bgp_zebra_vxlan_flood_control,
+        "frr_bgp:bgp_zebra_route_notify_owner": parse_frr_bgp_bgp_zebra_route_notify_owner,
+        "frr_bgp:bgp_zebra_evpn_advertise_type": parse_frr_bgp_bgp_zebra_evpn_advertise_type,
+        "frr_bgp:bgp_zebra_radv_operation": parse_frr_bgp_bgp_zebra_radv_operation,
+        "frr_bgp:bgp_ifp_oper": parse_frr_bgp_ifp_oper,
+        "frr_bgp:bgp_redistribute_add_zrecv": parse_bgp_redistribute_zrecv,
+        "frr_bgp:bgp_redistribute_delete_zrecv": parse_bgp_redistribute_zrecv,
+        "frr_bgp:interface_address_oper_zrecv": parse_frr_interface_addr_oper_zrecv,
+        "frr_bgp:router_id_update_zrecv": parse_frr_bgp_router_id_update_zrecv,
+        "frr_bgp:ug_bgp_aggregate_install": parse_frr_bgp_ug_bgp_aggregate_install,
+        "frr_bgp:ug_create_delete": parse_frr_bgp_ug_create_delete,
+        "frr_bgp:ug_subgroup_create_delete": parse_frr_bgp_ug_subgroup_create_delete,
+        "frr_bgp:ug_subgroup_add_remove_peer": parse_frr_bgp_ug_subgroup_add_remove_peer,
+        "frr_bgp:upd_rmac_is_self_mac": parse_frr_bgp_upd_rmac_is_self_mac,
+        "frr_bgp:upd_attr_type_unsupported": parse_frr_bgp_attr_type_unsupported,
+        "frr_bgp:upd_prefix_filtered_due_to": parse_frr_update_prefix_filter,
+        "frr_bgp:upd_mp_unrecognized_afi_safi": parse_frr_bgp_upd_mp_unrecognized_afi_safi,
+        "frr_zebra:if_add_del_update": parse_frr_zebra_if_add_del_update,
+        "frr_zebra:if_protodown": parse_frr_zebra_if_protodown,
+        "frr_zebra:if_upd_ctx_dplane_result": parse_frr_zebra_if_upd_ctx_dplane_result,
+        "frr_zebra:if_vrf_change": parse_frr_zebra_if_vrf_change,
+        "frr_zebra:if_dplane_result": parse_frr_zebra_if_dplane_result,
+        "frr_zebra:if_dplane_ifp_handling": parse_frr_zebra_if_dplane_ifp_handling,
+        "frr_zebra:if_dplane_ifp_handling_new": parse_frr_zebra_if_dplane_ifp_handling_new,
+        "frr_zebra:if_ip_addr_add_del": parse_frr_zebra_if_ip_addr_add_del,
+        "frr_zebra:get_iflink_speed": parse_frr_zebra_get_iflink_speed,
+        "frr_zebra:netlink_macfdb_change": parse_frr_zebra_netlink_macfdb_change,
+        "frr_zebra:netlink_neigh_update_msg_encode": parse_frr_zebra_netlink_neigh_update_msg_encode,
+        "frr_zebra:netlink_nexthop_msg_encode_err": parse_frr_zebra_netlink_nexthop_msg_encode_err,
+        "frr_zebra:netlink_route_multipath_msg_encode": parse_frr_zebra_netlink_route_multipath_msg_encode,
+        "frr_zebra:netlink_vrf_change": parse_frr_zebra_netlink_vrf_change,
+        "frr_zebra:netlink_msg_err": parse_frr_zebra_netlink_msg_err,
+        "frr_zebra:netlink_intf_err": parse_frr_zebra_netlink_intf_err,
+        "frr_zebra:zebra_interface_nhg_reinstall": parse_frr_zebra_interface_nhg_reinstall,
+        "frr_zebra:zebra_nhg_dplane_result": parse_frr_zebra_zebra_nhg_dplane_result,
+        "frr_zebra:zebra_nhg_install_kernel": parse_frr_zebra_nhg_install,
+        "frr_zebra:zread_nhg_add": parse_frr_zebra_zread_nhg_add,
+        "frr_zebra:zread_nhg_del": parse_frr_zebra_zread_nhg_del,
+        "frr_zebra:dplane_vtep_add_del": parse_frr_zebra_dplane_vtep_add_del,
+        "frr_zebra:get_srv6_sid": parse_frr_zebra_get_srv6_sid,
+        "frr_zebra:get_srv6_sid_explicit": parse_frr_zebra_get_srv6_sid_explicit,
+        "frr_zebra:release_srv6_sid": parse_frr_zebra_release_srv6_sid,
+        "frr_zebra:release_srv6_sid_func_explicit": parse_frr_zebra_release_srv6_sid_func_explicit,
+        "frr_zebra:srv6_manager_get_sid_internal": parse_frr_zebra_srv6_manager_get_sid_internal,
+        "frr_zebra:zebra_vxlan_handle_vni_transition": parse_frr_zebra_zebra_vxlan_handle_vni_transition,
+        "frr_zebra:zebra_vxlan_remote_macip_add": parse_frr_zebra_zebra_vxlan_remote_macip_add,
+        "frr_zebra:zebra_vxlan_remote_macip_del": parse_frr_zebra_zebra_vxlan_remote_macip_del,
+        "frr_zebra:zebra_vxlan_remote_vtep_add": parse_frr_zebra_zebra_vxlan_remote_vtep_add,
+        "frr_zebra:zebra_vxlan_remote_vtep_del": parse_frr_zebra_zebra_vxlan_remote_vtep_del,
+        "frr_zebra:evpn_dplane_remote_nh_add": parse_frr_zebra_evpn_dplane_remote_nh_add,
+        "frr_zebra:evpn_dplane_remote_nh_del": parse_frr_zebra_evpn_dplane_remote_nh_del,
+        "frr_zebra:evpn_dplane_remote_rmac_add": parse_frr_zebra_evpn_dplane_remote_rmac_add,
+        "frr_zebra:evpn_dplane_remote_rmac_del": parse_frr_zebra_evpn_dplane_remote_rmac_del,
+        "frr_zebra:l3vni_remote_rmac": parse_frr_zebra_l3vni_remote_rmac,
+        "frr_zebra:l3vni_remote_rmac_update": parse_frr_zebra_l3vni_remote_rmac_update,
+        "frr_zebra:l3vni_remote_vtep_nh_upd": parse_frr_zebra_l3vni_remote_vtep_nh_upd,
+        "frr_zebra:remote_nh_add_rmac_change": parse_frr_zebra_remote_nh_add_rmac_change,
+        "frr_zebra:send_l3vni_oper_to_client": parse_frr_zebra_send_l3vni_oper_to_client,
+        "frr_zebra:zevpn_build_l2vni_hash": parse_frr_zebra_zevpn_build_l2vni_hash,
+        "frr_zebra:zevpn_build_vni_hash": parse_frr_zebra_zevpn_build_vni_hash,
+        "frr_zebra:if_netlink_parse_error": parse_frr_zebra_if_netlink_parse_error,
+        "frr_bgp:gr_deferral_timer_start": parse_frr_bgp_gr_deferral_timer_start,
+        "frr_bgp:gr_deferral_timer_expiry": parse_frr_bgp_gr_deferral_timer_expiry,
+        "frr_bgp:gr_eors": parse_frr_bgp_gr_eors,
+        "frr_bgp:gr_eor_peer": parse_frr_bgp_gr_eor_peer,
+        "frr_bgp:gr_start_deferred_path_selection": parse_frr_bgp_gr_start_deferred_path_selection,
+        "frr_bgp:gr_send_fbit_capability": parse_frr_bgp_gr_send_fbit_capability,
+        "frr_bgp:gr_continue_deferred_path_selection": parse_frr_bgp_gr_continue_deferred_path_selection,
+        "frr_bgp:gr_zebra_update": parse_frr_bgp_gr_zebra_update,
+        "frr_zebra:gr_client_not_found": parse_frr_zebra_gr_client_not_found,
+    }
 
     # get the trace path from the first command line argument
     trace_path = sys.argv[1]

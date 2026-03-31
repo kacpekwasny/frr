@@ -974,7 +974,8 @@ extern int bgp_show_table_rd(struct vty *vty, struct bgp *bgp, afi_t afi, safi_t
 			     struct bgp_table *table, struct prefix_rd *prd,
 			     enum bgp_show_type type, void *output_arg,
 			     uint16_t show_flags);
-extern void bgp_best_path_select_defer(struct bgp *bgp, afi_t afi, safi_t safi);
+extern void bgp_do_deferred_path_selection(struct bgp *bgp, afi_t afi, safi_t safi);
+extern void bgp_process_gr_deferral_complete(struct bgp *bgp, afi_t afi, safi_t safi);
 extern bool bgp_update_martian_nexthop(struct bgp *bgp, afi_t afi, safi_t safi,
 				       uint8_t type, uint8_t stype,
 				       struct attr *attr, struct bgp_dest *dest);
@@ -1011,4 +1012,6 @@ extern int early_route_process(struct bgp *bgp, struct bgp_dest *dest);
 extern int other_route_process(struct bgp *bgp, struct bgp_dest *dest);
 extern int eoiu_marker_process(struct bgp *bgp, struct bgp_dest *dest);
 extern uint32_t bgp_med_value(struct attr *attr, struct bgp *bgp);
+extern int bgp_dest_set_defer_flag(struct bgp_dest *dest, bool delete);
+extern void bgp_process_main_one(struct bgp *bgp, struct bgp_dest *dest, afi_t afi, safi_t safi);
 #endif /* _QUAGGA_BGP_ROUTE_H */

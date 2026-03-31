@@ -182,6 +182,8 @@ struct zebra_router {
 	struct zebra_vrf *evpn_vrf;
 
 	uint32_t multipath_num;
+	bool gr_stale_cleanup_time_recorded;
+	bool gr_update_pending_time_recorded;
 
 	/*
 	 * zebra start time and time of sweeping RIB of old routes
