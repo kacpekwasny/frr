@@ -209,8 +209,30 @@ static void zebra_gr_delete_stale_client(struct client_gr_info *info)
 		return;
 
 	/*
-	 * If there are bgp instances with the stale delete timer pending
-	 * then stale client is not deleted
+	 * If stale_client_ptr now points at the active client, bgpd has
+	 * reconnected during the stale window and the stale route cleanup
+	 * is now done.  Reset this info entry for the next GR cycle:
+	 *
+	 *  - Do NOT decrement gr_instance_count.  It must stay > 0 so that
+	 *    a future disconnect is treated as GR rather than triggering an
+	 *    immediate EVPN/route wipeout.
+	 *
+	 *  - Do NOT remove info from the gr_info_queue.  It must persist so
+	 *    that zebra_gr_client_disconnect() can re-arm the stale timer on
+	 *    the next disconnect.
+	 */
+	if (zserv_find_client(s_client->proto, s_client->instance)
+	    == s_client) {
+		info->stale_client = false;
+		info->stale_client_ptr = NULL;
+		LOG_GR("%s: Client %s vrf %u stale cycle complete, GR state preserved",
+		       __func__, zebra_route_string(s_client->proto),
+		       info->vrf_id);
+		return;
+	}
+
+	/*
+	 * True stale case: bgpd did not reconnect within the stale window.
 	 */
 	if ((s_client->gr_instance_count > 0) && info->gr_enable)
 		s_client->gr_instance_count--;
@@ -293,7 +315,33 @@ void zebra_gr_client_reconnect(struct zserv *client)
 
 	TAILQ_FOREACH (info, &client->gr_info_queue, gr_info) {
 		info->stale_client_ptr = client;
-		info->stale_client = false;
+		info->client_ptr = client;
+		info->stale_client = true;  /* keep stale protection active */
+
+		/*
+		 * Reset route_sync so the new session's UPDATE_COMPLETE
+		 * messages are not short-circuited by state left over from
+		 * a previous GR cycle.
+		 */
+		memset(info->route_sync, 0, sizeof(info->route_sync));
+
+		/*
+		 * Re-arm the stale removal timer on the new client context.
+		 * The old timer was associated with old_client which is about
+		 * to be deleted — cancel it and restart it so it fires against
+		 * the new client's info struct.
+		 */
+		if (info->t_stale_removal) {
+			long remaining = event_timer_remain_msec(
+				info->t_stale_removal);
+			EVENT_OFF(info->t_stale_removal);
+			event_add_timer_msec(
+				zrouter.master,
+				zebra_gr_route_stale_delete_timer_expiry,
+				info,
+				remaining,
+				&info->t_stale_removal);
+		}
 	}
 
 	/* Delete the stale client */
@@ -447,10 +495,29 @@ void zread_client_capabilities(ZAPI_HANDLER_ARGS)
 		info->route_sync[api.afi] = true;
 
 		/*
-		 * Schedule for after anything already in the meta Q
+		 * Only run the immediate stale-route cleanup when the
+		 * stale-removal timer is not active.  While the timer is
+		 * running we are still inside the stalepath-time window.
+		 * bgpd sends ROUTE_UPDATE_COMPLETE as soon as a non-GR peer
+		 * reaches ESTABLISHED — before that peer has re-announced any
+		 * routes — so firing rib_add_gr_run here would delete routes
+		 * from peers that have not yet reconnected.  Defer to the
+		 * stale-removal timer, which enforces the configured
+		 * stalepath-time.
+		 *
+		 * When zebra itself is restarting (zrouter.graceful_restart),
+		 * there is no stale-removal timer at all — bgpd connected fresh
+		 * to the new zebra.  In that case, rely exclusively on
+		 * rib_sweep_route (scheduled at gr_cleanup_time) to remove old
+		 * kernel routes.  Calling rib_add_gr_run here would delete
+		 * kernel routes immediately when the first BGP peer reaches
+		 * ESTABLISHED, before bgpd has had a chance to re-install all
+		 * routes from that peer.
 		 */
-		rib_add_gr_run(api.afi, api.vrf_id, client->proto, client->instance,
-			       client->restart_time, client->update_pending_time, false);
+		if (!info->t_stale_removal && !zrouter.graceful_restart)
+			rib_add_gr_run(api.afi, api.vrf_id, client->proto,
+				       client->instance, client->restart_time,
+				       client->update_pending_time, false);
 		zebra_gr_process_client_stale_routes(client, info);
 		break;
 	case ZEBRA_CLIENT_ROUTE_UPDATE_PENDING:
@@ -559,6 +626,16 @@ static void zebra_gr_route_stale_delete_timer_expiry(struct event *thread)
 	else
 		client = (struct zserv *)info->stale_client_ptr;
 
+	/*
+	 * Save fields we need for the rib_add_gr_run() call below.
+	 * zebra_gr_delete_stale_client() may free both info and client
+	 * (via zserv_client_delete), so they must not be dereferenced
+	 * after that call.
+	 */
+	vrf_id_t saved_vrf_id = info->vrf_id;
+	uint8_t saved_proto = client->proto;
+	uint16_t saved_instance = client->instance;
+
 	cnt = zebra_gr_delete_stale_routes(info);
 
 	/* Restart the timer */
@@ -581,7 +658,7 @@ static void zebra_gr_route_stale_delete_timer_expiry(struct event *thread)
 	}
 
 	/* Schedule GR info and stale client deletion */
-	rib_add_gr_run(0, info->vrf_id, client->proto, client->instance, 0, 0, true);
+	rib_add_gr_run(0, saved_vrf_id, saved_proto, saved_instance, 0, 0, true);
 }
 
 
@@ -838,8 +915,16 @@ static void zebra_gr_process_client_stale_routes(struct zserv *client,
 		LOG_GR("%s: Client %s route update complete for all AFI/SAFI in vrf %s(%d)",
 		       __func__, zebra_route_string(client->proto),
 		       VRF_LOGNAME(vrf), info->vrf_id);
-		event_cancel(&info->t_stale_removal);
-
+		/*
+		 * Do NOT cancel the stale-removal timer here.  bgpd can send
+		 * ROUTE_UPDATE_COMPLETE prematurely — for example when a
+		 * non-GR-capable peer reaches ESTABLISHED before it has
+		 * re-announced any routes.  Cancelling the timer at that
+		 * point would bypass the configured stalepath-time and allow
+		 * routes from peers that have not yet reconnected to be
+		 * deleted immediately.  The timer callback performs the final
+		 * stale-route sweep and honours the stalepath-time window.
+		 */
 		frrtrace(4, frr_zebra, gr_process_client_stale_routes,
 			 zebra_route_string(client->proto), VRF_LOGNAME(vrf), afi, 0);
 	}
