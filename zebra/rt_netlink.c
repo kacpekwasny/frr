@@ -80,6 +80,10 @@
 #endif
 
 DEFINE_MTYPE_STATIC(LIB, NH_SRV6, "Nexthop srv6");
+DEFINE_MTYPE_STATIC(ZEBRA, PENDING_ROUTE,
+		    "Pending route awaiting VRF table registration");
+DEFINE_MTYPE_STATIC(ZEBRA, PENDING_ROUTE_BUF,
+		    "Pending route netlink message buffer");
 
 static vlanid_t filter_vlan = 0;
 
@@ -1055,11 +1059,59 @@ int netlink_route_notify_read_ctx(struct nlmsghdr *h, ns_id_t ns_id,
 }
 
 /*
+ * Pending-route queue
+ *
+ * On Linux, RTM_NEWROUTE messages for routes in a VRF-specific table can
+ * arrive before the RTM_NEWLINK that registers the corresponding VRF device.
+ * When zebra_vrf_lookup_by_table() fails to find the VRF it falls back to
+ * VRF_DEFAULT, which causes the route to be misattributed.
+ *
+ * To fix this, we queue RTM_NEWROUTE messages whose table ID has no VRF
+ * associated yet.  Once the VRF's RTM_NEWLINK is processed and its table_id
+ * is registered, zebra_rib_process_pending_routes_for_table() replays the
+ * queued messages with the correct VRF in place.
+ */
+struct zebra_pending_route {
+	uint32_t table_id;
+	ns_id_t ns_id;
+	int startup;
+	struct nlmsghdr *h; /* owned copy of the full netlink message */
+};
+
+/* All pending routes across all namespaces. */
+static struct list *_pending_routes;
+
+static void zebra_pending_route_free(struct zebra_pending_route *pr)
+{
+	XFREE(MTYPE_PENDING_ROUTE_BUF, pr->h);
+	XFREE(MTYPE_PENDING_ROUTE, pr);
+}
+
+static void zebra_rib_pending_route_add(struct nlmsghdr *h, ns_id_t ns_id,
+					int startup, uint32_t table_id)
+{
+	struct zebra_pending_route *pr;
+
+	if (!_pending_routes)
+		_pending_routes = list_new();
+
+	pr = XCALLOC(MTYPE_PENDING_ROUTE, sizeof(*pr));
+	pr->table_id = table_id;
+	pr->ns_id = ns_id;
+	pr->startup = startup;
+	pr->h = XCALLOC(MTYPE_PENDING_ROUTE_BUF, h->nlmsg_len);
+	memcpy(pr->h, h, h->nlmsg_len);
+
+	listnode_add(_pending_routes, pr);
+}
+
+/*
  * Parse a route update netlink message, extract and validate its data,
  * call into zebra with an update.
  */
 static int netlink_route_change_read_unicast_internal(struct nlmsghdr *h,
-						      ns_id_t ns_id, int startup)
+						      ns_id_t ns_id, int startup,
+						      bool is_retry)
 {
 	int len;
 	struct rtmsg *rtm;
@@ -1171,6 +1223,38 @@ static int netlink_route_change_read_unicast_internal(struct nlmsghdr *h,
 	if (vrf_id == VRF_DEFAULT) {
 		if (!is_zebra_valid_kernel_table(table)
 		    && !is_zebra_main_routing_table(table)) {
+			ret = 0;
+			goto done;
+		}
+		/*
+		 * The table is valid but no VRF has claimed it yet.  This
+		 * happens when RTM_NEWROUTE for a VRF-specific table races
+		 * ahead of the RTM_NEWLINK that registers the VRF device.
+		 *
+		 * Queue RTM_NEWROUTE messages for replay once the VRF
+		 * registers its table_id.  RTM_DELROUTE for an unknown table
+		 * is dropped: the route was never correctly installed so there
+		 * is nothing to remove.  On retry (is_retry == true) the VRF
+		 * must already be registered; if it still isn't, drop the
+		 * route with a warning rather than misattributing it to
+		 * VRF_DEFAULT.
+		 */
+		if (!is_zebra_main_routing_table(table)) {
+			if (!is_retry && h->nlmsg_type == RTM_NEWROUTE) {
+				if (IS_ZEBRA_DEBUG_KERNEL)
+					zlog_debug(
+						"%s: table %u has no registered VRF yet,"
+						" queuing route for replay",
+						__func__, table);
+				zebra_rib_pending_route_add(h, ns_id, startup,
+							    table);
+			} else if (is_retry) {
+				zlog_warn(
+					"%s: VRF for table %u still not registered"
+					" on retry, dropping route to avoid"
+					" VRF_DEFAULT misattribution",
+					__func__, table);
+			}
 			ret = 0;
 			goto done;
 		}
@@ -1327,7 +1411,70 @@ done:
 static int netlink_route_change_read_unicast(struct nlmsghdr *h, ns_id_t ns_id,
 					     int startup)
 {
-	return netlink_route_change_read_unicast_internal(h, ns_id, startup);
+	return netlink_route_change_read_unicast_internal(h, ns_id, startup,
+							  false);
+}
+
+/*
+ * zebra_rib_process_pending_routes_for_table - replay queued routes
+ *
+ * Called from interface_vrf_change() after a VRF device's table_id has been
+ * registered.  Any RTM_NEWROUTE messages that arrived before the RTM_NEWLINK
+ * and were queued in _pending_routes are replayed now that the VRF lookup
+ * will succeed.
+ */
+void zebra_rib_process_pending_routes_for_table(uint32_t table_id,
+						ns_id_t ns_id)
+{
+	struct listnode *node, *nnode;
+	struct zebra_pending_route *pr;
+
+	if (!_pending_routes || list_isempty(_pending_routes))
+		return;
+
+	for (ALL_LIST_ELEMENTS(_pending_routes, node, nnode, pr)) {
+		if (pr->table_id != table_id || pr->ns_id != ns_id)
+			continue;
+
+		list_delete_node(_pending_routes, node);
+
+		if (IS_ZEBRA_DEBUG_KERNEL)
+			zlog_debug(
+				"%s: replaying queued RTM_NEWROUTE for table %u (ns %u)",
+				__func__, table_id, ns_id);
+
+		netlink_route_change_read_unicast_internal(pr->h, pr->ns_id,
+							   pr->startup, true);
+		zebra_pending_route_free(pr);
+	}
+}
+
+/*
+ * zebra_rib_clear_pending_routes_for_table - discard queued routes
+ *
+ * Called when a VRF device is deleted before its queued routes are ever
+ * replayed.  Prevents stale entries from accumulating.
+ */
+void zebra_rib_clear_pending_routes_for_table(uint32_t table_id, ns_id_t ns_id)
+{
+	struct listnode *node, *nnode;
+	struct zebra_pending_route *pr;
+
+	if (!_pending_routes || list_isempty(_pending_routes))
+		return;
+
+	for (ALL_LIST_ELEMENTS(_pending_routes, node, nnode, pr)) {
+		if (pr->table_id != table_id || pr->ns_id != ns_id)
+			continue;
+
+		if (IS_ZEBRA_DEBUG_KERNEL)
+			zlog_debug(
+				"%s: discarding queued route for deleted VRF table %u (ns %u)",
+				__func__, table_id, ns_id);
+
+		list_delete_node(_pending_routes, node);
+		zebra_pending_route_free(pr);
+	}
 }
 
 static struct mcast_route_data *mroute = NULL;

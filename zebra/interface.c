@@ -1437,6 +1437,10 @@ static void interface_vrf_change(enum dplane_op_e op, ifindex_t ifindex,
 			zlog_debug("DPLANE_OP_INTF_DELETE for VRF %s(%u)", name,
 				   ifindex);
 
+		/* Discard any routes queued for this table before the VRF was
+		 * fully registered; they can never be correctly installed now. */
+		zebra_rib_clear_pending_routes_for_table(tableid, ns_id);
+
 		vrf = vrf_lookup_by_id((vrf_id_t)ifindex);
 		if (!vrf) {
 			flog_warn(EC_ZEBRA_VRF_NOT_FOUND,
@@ -1497,6 +1501,11 @@ static void interface_vrf_change(enum dplane_op_e op, ifindex_t ifindex,
 		 */
 		zvrf = (struct zebra_vrf *)vrf->info;
 		zvrf->table_id = tableid;
+
+		/* Replay any RTM_NEWROUTE messages that arrived before this
+		 * VRF's RTM_NEWLINK was processed and were queued to avoid
+		 * being misattributed to VRF_DEFAULT. */
+		zebra_rib_process_pending_routes_for_table(tableid, ns_id);
 
 		/* Enable the created VRF. */
 		if (!vrf_enable(vrf)) {

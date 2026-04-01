@@ -65,6 +65,15 @@ extern int netlink_route_change(struct nlmsghdr *h, ns_id_t ns_id, int startup);
 extern int netlink_route_read(struct zebra_ns *zns);
 
 /*
+ * Pending-route queue: routes whose VRF was not registered when RTM_NEWROUTE
+ * arrived are held here and replayed once the VRF's table_id is known.
+ */
+extern void zebra_rib_process_pending_routes_for_table(uint32_t table_id,
+						       ns_id_t ns_id);
+extern void zebra_rib_clear_pending_routes_for_table(uint32_t table_id,
+						     ns_id_t ns_id);
+
+/*
  * Public api for parsing a route notification message: this notification
  * only parses the top-level route attributes, and doesn't include nexthops.
  * FPM, for example, is a user.
