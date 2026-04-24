@@ -1426,6 +1426,32 @@ static int zl3vni_remote_rmac_add(struct zebra_l3vni *zl3vni,
 	return 0;
 }
 
+struct rmac_nh_ref_ctx {
+	struct in_addr vtep_ip;
+	bool active_ref_found;
+};
+
+static void zl3vni_check_nh_ref(struct hash_bucket *bucket, void *arg)
+{
+	struct zebra_neigh *n = bucket->data;
+	struct rmac_nh_ref_ctx *ctx = arg;
+	struct in_addr n_ipv4;
+
+	if (ctx->active_ref_found)
+		return;
+
+	if (n->ip.ipa_type == IPADDR_V4)
+		n_ipv4 = n->ip.ipaddr_v4;
+	else if (n->ip.ipa_type == IPADDR_V6)
+		ipv4_mapped_ipv6_to_ipv4(&n->ip.ipaddr_v6, &n_ipv4);
+	else
+		return;
+
+	if (n_ipv4.s_addr == ctx->vtep_ip.s_addr &&
+	    !RB_EMPTY(host_rb_tree_entry, &n->host_rb)) {
+		ctx->active_ref_found = true;
+	}
+}
 
 /* handle rmac delete */
 static void zl3vni_remote_rmac_del(struct zebra_l3vni *zl3vni,
@@ -1433,23 +1459,43 @@ static void zl3vni_remote_rmac_del(struct zebra_l3vni *zl3vni,
 				   struct ipaddr *vtep_ip)
 {
 	if (!zl3vni_nh_lookup(zl3vni, vtep_ip)) {
+		struct ipaddr ipv4_vtep = {};
+
+		ipv4_vtep.ipa_type = IPADDR_V4;
+		if (vtep_ip->ipa_type == IPADDR_V6)
+			ipv4_mapped_ipv6_to_ipv4(&vtep_ip->ipaddr_v6,
+						 &ipv4_vtep.ipaddr_v4);
+		else
+			memcpy(&(ipv4_vtep.ipaddr_v4), &vtep_ip->ipaddr_v4,
+			       sizeof(struct in_addr));
+
 		/* remove nh from rmac's list */
-		l3vni_rmac_nh_list_nh_delete(zl3vni, zrmac, vtep_ip);
+		struct rmac_nh_ref_ctx ctx = {};
+
+		ctx.vtep_ip = ipv4_vtep.ipaddr_v4;
+
+		/* Check if any other neighbor entry shares this VTEP and has active routes */
+		if (zl3vni->nh_table)
+			hash_iterate(zl3vni->nh_table, zl3vni_check_nh_ref, &ctx);
+
+		if (ctx.active_ref_found)
+			return;
+
+		l3vni_rmac_nh_list_nh_delete(zl3vni, zrmac, &ipv4_vtep);
 		/* If there are remaining entries, use IPv4 from one */
 		if (listcount(zrmac->nh_list)) {
-			struct ipaddr *vtep;
-			struct ipaddr ipv4_vtep;
+			struct ipaddr *next_vtep;
+			struct ipaddr next_ipv4_vtep = {};
 
-			vtep = listgetdata(listhead(zrmac->nh_list));
-			memset(&ipv4_vtep, 0, sizeof(ipv4_vtep));
-			ipv4_vtep.ipa_type = IPADDR_V4;
-			if (vtep->ipa_type == IPADDR_V6)
-				ipv4_mapped_ipv6_to_ipv4(&vtep->ipaddr_v6,
-							 &(ipv4_vtep.ipaddr_v4));
+			next_vtep = listgetdata(listhead(zrmac->nh_list));
+			next_ipv4_vtep.ipa_type = IPADDR_V4;
+			if (next_vtep->ipa_type == IPADDR_V6)
+				ipv4_mapped_ipv6_to_ipv4(&next_vtep->ipaddr_v6,
+							 &(next_ipv4_vtep.ipaddr_v4));
 			else
-				IPV4_ADDR_COPY(&(ipv4_vtep.ipaddr_v4),
-					       &vtep->ipaddr_v4);
-			zrmac->fwd_info.r_vtep_ip = ipv4_vtep.ipaddr_v4;
+				IPV4_ADDR_COPY(&(next_ipv4_vtep.ipaddr_v4),
+					       &next_vtep->ipaddr_v4);
+			zrmac->fwd_info.r_vtep_ip = next_ipv4_vtep.ipaddr_v4;
 			if (IS_ZEBRA_DEBUG_VXLAN)
 				zlog_debug("L3VNI %u Remote VTEP nh change(%pIA -> %pI4) for RMAC %pEA",
 					   zl3vni->vni, vtep_ip,
@@ -1739,8 +1785,8 @@ static int zl3vni_remote_nh_add(struct zebra_l3vni *zl3vni,
 	return 0;
 }
 
-/* Del remote vtep as a neigh entry */
-static void zl3vni_remote_nh_del(struct zebra_l3vni *zl3vni,
+/* handle nh neigh delete */
+static int zl3vni_remote_nh_del(struct zebra_l3vni *zl3vni,
 				 struct zebra_neigh *nh,
 				 struct prefix *host_prefix)
 {
@@ -1752,7 +1798,11 @@ static void zl3vni_remote_nh_del(struct zebra_l3vni *zl3vni,
 
 		/* delete the nh entry */
 		zl3vni_nh_del(zl3vni, nh);
+
+		return 1;
 	}
+
+	return 0;
 }
 
 /* Add remote vtep as a SVD neigh entry */
@@ -2611,14 +2661,11 @@ void zebra_vxlan_evpn_vrf_route_del(vrf_id_t vrf_id,
 	zrmac = zl3vni_rmac_lookup(zl3vni, &nh->emac);
 
 	/* delete the next hop entry */
-	zl3vni_remote_nh_del(zl3vni, nh, host_prefix);
+	if (zl3vni_remote_nh_del(zl3vni, nh, host_prefix) && zrmac)
+		zl3vni_remote_rmac_del(zl3vni, zrmac, vtep_ip);
 
 	/* Delete SVD next hop entry */
 	svd_remote_nh_del(zl3vni, vtep_ip);
-
-	/* delete the rmac entry */
-	if (zrmac)
-		zl3vni_remote_rmac_del(zl3vni, zrmac, vtep_ip);
 }
 
 void zebra_vxlan_print_specific_rmac_l3vni(struct vty *vty, vni_t l3vni,
