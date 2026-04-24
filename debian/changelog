@@ -1,3 +1,15 @@
+frr (10.3.3-1) unstable; urgency=medium
+
+  * PR #15: CRSKRK-350: suppress expected libyang errors
+  * PR #16: CRSKRK-358: EVPN routes disappear from FRR's RIB on BGP
+    Graceful Restart
+  * PR #17: CRSKRK-371: fix frr_restart_graceful not working correctly
+    under heavy load
+  * PR #18: VPC-2167: zebra: queue RTM_NEWROUTE for unknown VRF tables
+    to fix race with RTM_NEWLINK
+
+ -- Dawid Kopec <dkopec@akamai.com>  Thu, 31 Mar 2026 14:00:00 +0200
+
 frr (10.3.3-0) unstable; urgency=medium
 
   * New upstream release FRR 10.3.3
