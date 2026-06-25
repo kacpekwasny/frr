@@ -690,26 +690,6 @@ static bool zebra_gr_process_route_entry(struct route_node *rn,
 	return false;
 }
 
-static void zebra_gr_delete_stale_info_client(struct event *event)
-{
-	struct zebra_gr_afi_clean *gac = EVENT_ARG(event);
-	struct zserv *s_client = zebra_gr_find_stale_client(gac->proto, gac->instance);
-
-	if (s_client) {
-		struct client_gr_info *info;
-
-		TAILQ_FOREACH (info, &s_client->gr_info_queue, gr_info) {
-			if (info->vrf_id == gac->vrf_id) {
-				if (info->stale_client)
-					zebra_gr_delete_stale_client(info);
-				break;
-			}
-		}
-	}
-
-	XFREE(MTYPE_ZEBRA_GR, gac);
-}
-
 /* Helper: return whether we should reschedule based on live info state. */
 static bool zebra_gr_should_reschedule(const struct zebra_gr_afi_clean *gac)
 {
