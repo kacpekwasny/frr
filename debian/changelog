@@ -1,3 +1,10 @@
+frr (10.3.3-3) unstable; urgency=medium
+
+  * zebra: clear stale RIB_ROUTE_QUEUED flag on VRF meta-queue
+    flush, fixing kernel routes left stuck inactive after a VRF disable
+
+ -- Dawid Kopec <dkopec@akamai.com>  Thu, 25 Jun 2026 10:00:00 +0200
+
 frr (10.3.3-2) unstable; urgency=medium
 
   * PR #19: CRSKRK-31: zebra: fix premature RMAC deletion with split
