@@ -5609,7 +5609,7 @@ void bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 
 			bgp_dest_unlock_node(dest);
 			bgp_attr_unintern(&attr_new);
-			if (p_evpn)
+			if (p_evpn && !p_evpn->refcnt)
 				evpn_overlay_free(p_evpn);
 			return;
 		}
@@ -5782,7 +5782,7 @@ void bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 			ret = bgp_damp_update(pi, dest, afi, safi);
 			if (ret == BGP_DAMP_SUPPRESSED) {
 				bgp_dest_unlock_node(dest);
-				if (p_evpn)
+				if (p_evpn && !p_evpn->refcnt)
 					evpn_overlay_free(p_evpn);
 				return;
 			}
@@ -5870,7 +5870,7 @@ void bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 					   type, sub_type, NULL);
 		}
 #endif
-		if (p_evpn)
+		if (p_evpn && !p_evpn->refcnt)
 			evpn_overlay_free(p_evpn);
 		return;
 	} // End of implicit withdraw
@@ -5966,7 +5966,7 @@ void bgp_update(struct peer *peer, const struct prefix *p, uint32_t addpath_id,
 	}
 #endif
 
-	if (p_evpn)
+	if (p_evpn && !p_evpn->refcnt)
 		evpn_overlay_free(p_evpn);
 	return;
 
@@ -6031,7 +6031,7 @@ filtered:
 	}
 #endif
 
-	if (p_evpn)
+	if (p_evpn && !p_evpn->refcnt)
 		evpn_overlay_free(p_evpn);
 	return;
 }
