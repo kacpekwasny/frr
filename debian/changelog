@@ -1,3 +1,10 @@
+frr (10.3.3-4) unstable; urgency=medium
+
+  * PR #26: bgpd: fix double-free of borrowed EVPN overlay in
+    soft-reconfig replay
+
+ -- Dawid Kopec <dkopec@akamai.com>  Tue, 07 Jul 2026 10:00:00 +0200
+
 frr (10.3.3-3) unstable; urgency=medium
 
   * zebra: clear stale RIB_ROUTE_QUEUED flag on VRF meta-queue
