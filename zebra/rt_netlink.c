@@ -1984,12 +1984,18 @@ static bool _netlink_nexthop_encode_seg6local_info(const struct nexthop *nexthop
 			return false;
 		if (!nl_attr_put(nlmsg, buflen, SEG6_LOCAL_NH4, &ctx->nh4, sizeof(struct in_addr)))
 			return false;
+		if (ctx->ifindex)
+			if (!nl_attr_put32(nlmsg, buflen, SEG6_LOCAL_OIF, ctx->ifindex))
+				return false;
 		break;
 	case ZEBRA_SEG6_LOCAL_ACTION_END_DX6:
 		if (!nl_attr_put32(nlmsg, buflen, SEG6_LOCAL_ACTION, SEG6_LOCAL_ACTION_END_DX6))
 			return false;
 		if (!nl_attr_put(nlmsg, buflen, SEG6_LOCAL_NH6, &ctx->nh6, sizeof(struct in6_addr)))
 			return false;
+		if (ctx->ifindex)
+			if (!nl_attr_put32(nlmsg, buflen, SEG6_LOCAL_OIF, ctx->ifindex))
+				return false;
 		break;
 	case ZEBRA_SEG6_LOCAL_ACTION_END_DT6:
 		if (!nl_attr_put32(nlmsg, buflen, SEG6_LOCAL_ACTION, SEG6_LOCAL_ACTION_END_DT6))

@@ -157,6 +157,16 @@ module frr-staticd {
         description
           "This enum indicates End.DT46 with NEXT-CSID endpoint behavior.";
       }
+      enum uDX6 {
+        value 60;
+        description
+          "This enum indicates End.DX6 with NEXT-CSID endpoint behavior.";
+      }
+      enum uDX4 {
+        value 61;
+        description
+          "This enum indicates End.DX4 with NEXT-CSID endpoint behavior.";
+      }
     }
     description
       "SRv6 Endpoint Behaviors Codepoints as per

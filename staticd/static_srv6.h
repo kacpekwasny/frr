@@ -21,6 +21,7 @@ struct static_srv6_sid_attributes {
 	char vrf_name[VRF_NAMSIZ];
 	char ifname[IFNAMSIZ];
 	struct in6_addr nh6;
+	struct in_addr nh4;
 
 	/* Resolved nexthop IPv6 address */
 	struct in6_addr resolved_nh6;

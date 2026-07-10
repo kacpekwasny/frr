@@ -115,9 +115,19 @@ void seg6local_context2json(const struct seg6local_context *ctx,
 		return;
 	case ZEBRA_SEG6_LOCAL_ACTION_END_DX6:
 		json_object_string_addf(json, "nh6", "%pI6", &ctx->nh6);
+		if (ctx->ifindex) {
+			json_object_string_add(json, "interfaceName",
+					       ifindex2ifname(ctx->ifindex, VRF_DEFAULT));
+			json_object_int_add(json, "interfaceIndex", ctx->ifindex);
+		}
 		return;
 	case ZEBRA_SEG6_LOCAL_ACTION_END_DX4:
 		json_object_string_addf(json, "nh4", "%pI4", &ctx->nh4);
+		if (ctx->ifindex) {
+			json_object_string_add(json, "interfaceName",
+					       ifindex2ifname(ctx->ifindex, VRF_DEFAULT));
+			json_object_int_add(json, "interfaceIndex", ctx->ifindex);
+		}
 		return;
 	case ZEBRA_SEG6_LOCAL_ACTION_END_T:
 	case ZEBRA_SEG6_LOCAL_ACTION_END_DT6:

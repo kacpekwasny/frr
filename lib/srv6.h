@@ -197,6 +197,8 @@ enum srv6_endpoint_behavior_codepoint {
 	SRV6_ENDPOINT_BEHAVIOR_END_X            = 0x0005,
 	SRV6_ENDPOINT_BEHAVIOR_END_X_PSP        = 0x0006,
 	SRV6_ENDPOINT_BEHAVIOR_END_B6_ENCAPS    = 0x000E,
+	SRV6_ENDPOINT_BEHAVIOR_END_DX6          = 0x0010,
+	SRV6_ENDPOINT_BEHAVIOR_END_DX4          = 0x0011,
 	SRV6_ENDPOINT_BEHAVIOR_END_DT6          = 0x0012,
 	SRV6_ENDPOINT_BEHAVIOR_END_DT4          = 0x0013,
 	SRV6_ENDPOINT_BEHAVIOR_END_DT46         = 0x0014,
@@ -209,6 +211,8 @@ enum srv6_endpoint_behavior_codepoint {
 	SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID_PSP_USD   = 0x0030,
 	SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP = 0x0035,
 	SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP_USD = 0x0039,
+	SRV6_ENDPOINT_BEHAVIOR_END_DX6_USID     = 0x003C,
+	SRV6_ENDPOINT_BEHAVIOR_END_DX4_USID     = 0x003D,
 	SRV6_ENDPOINT_BEHAVIOR_END_DT6_USID     = 0x003E,
 	SRV6_ENDPOINT_BEHAVIOR_END_DT4_USID     = 0x003F,
 	SRV6_ENDPOINT_BEHAVIOR_END_DT46_USID    = 0x0040,
@@ -246,6 +250,17 @@ static inline bool seg6local_has_next_csid(const struct seg6local_context *ctx)
 
 	return CHECK_SRV6_FLV_OP(flv_info->flv_ops, ZEBRA_SEG6_LOCAL_FLV_OP_NEXT_CSID);
 }
+
+/*
+ * SRv6 Endpoint Behavior classification macros.
+ */
+#define SRV6_BEHAVIOR_IS_DX4(b)                                                                    \
+	((b) == SRV6_ENDPOINT_BEHAVIOR_END_DX4 || (b) == SRV6_ENDPOINT_BEHAVIOR_END_DX4_USID)
+
+#define SRV6_BEHAVIOR_IS_DX6(b)                                                                    \
+	((b) == SRV6_ENDPOINT_BEHAVIOR_END_DX6 || (b) == SRV6_ENDPOINT_BEHAVIOR_END_DX6_USID)
+
+#define SRV6_BEHAVIOR_IS_DX(b) (SRV6_BEHAVIOR_IS_DX4(b) || SRV6_BEHAVIOR_IS_DX6(b))
 
 /*
  * Convert SRv6 endpoint behavior codepoints to human-friendly string.
@@ -290,6 +305,14 @@ srv6_endpoint_behavior_codepoint2str(enum srv6_endpoint_behavior_codepoint behav
 		return "uA PSP";
 	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP_USD:
 		return "uA PSP/USD";
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX6:
+		return "End.DX6";
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX4:
+		return "End.DX4";
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX6_USID:
+		return "uDX6";
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX4_USID:
+		return "uDX4";
 	case SRV6_ENDPOINT_BEHAVIOR_END_DT6_USID:
 		return "uDT6";
 	case SRV6_ENDPOINT_BEHAVIOR_END_DT4_USID:

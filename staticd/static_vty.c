@@ -1305,7 +1305,7 @@ DEFPY_YANG_NOSH (static_srv6_sids, static_srv6_sids_cmd,
 }
 
 DEFPY_YANG(srv6_sid, srv6_sid_cmd,
-      "sid X:X::X:X/M locator NAME$locator_name behavior <uN | uA interface INTERFACE$interface [nexthop X:X::X:X$nh6] | uDT6 vrf VIEWVRFNAME | uDT4 vrf VIEWVRFNAME | uDT46 vrf VIEWVRFNAME>",
+      "sid X:X::X:X/M locator NAME$locator_name behavior <uN | uA interface INTERFACE$interface [nexthop X:X::X:X$nh6] | uDX4 interface INTERFACE$interface nexthop A.B.C.D$nh4 | uDX6 interface INTERFACE$interface nexthop X:X::X:X$nh6 | uDT6 vrf VIEWVRFNAME | uDT4 vrf VIEWVRFNAME | uDT46 vrf VIEWVRFNAME>",
 	  "Configure SRv6 SID\n"
       "Specify SRv6 SID\n"
 	  "Locator name\n"
@@ -1313,6 +1313,16 @@ DEFPY_YANG(srv6_sid, srv6_sid_cmd,
       "Specify SRv6 SID behavior\n"
       "Apply the code to a uN SID\n"
       "Behavior uA\n"
+      "Configure the interface\n"
+      "Interface name\n"
+      "Configure the nexthop\n"
+      "IPv6 address of the nexthop\n"
+      "Behavior uDX4 (End.DX4 with NEXT-CSID)\n"
+      "Configure the interface\n"
+      "Interface name\n"
+      "Configure the nexthop\n"
+      "IPv4 address of the nexthop\n"
+      "Behavior uDX6 (End.DX6 with NEXT-CSID)\n"
       "Configure the interface\n"
       "Interface name\n"
       "Configure the nexthop\n"
@@ -1341,6 +1351,10 @@ DEFPY_YANG(srv6_sid, srv6_sid_cmd,
 
 	if (argv_find(argv, argc, "uN", &idx)) {
 		behavior = SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID;
+	} else if (argv_find(argv, argc, "uDX4", &idx)) {
+		behavior = SRV6_ENDPOINT_BEHAVIOR_END_DX4_USID;
+	} else if (argv_find(argv, argc, "uDX6", &idx)) {
+		behavior = SRV6_ENDPOINT_BEHAVIOR_END_DX6_USID;
 	} else if (argv_find(argv, argc, "uDT6", &idx)) {
 		behavior = SRV6_ENDPOINT_BEHAVIOR_END_DT6_USID;
 		vrf_name = argv[idx + 2]->arg;
@@ -1391,6 +1405,14 @@ DEFPY_YANG(srv6_sid, srv6_sid_cmd,
 		nb_cli_enqueue_change(vty, xpath_nexthop, NB_OP_MODIFY, nh6_str);
 	}
 
+	if (nh4_str) {
+		snprintf(ab_xpath, sizeof(ab_xpath), FRR_STATIC_SRV6_SID_NEXTHOP_XPATH, 0);
+		strlcpy(xpath_nexthop, xpath_sid, sizeof(xpath_nexthop));
+		strlcat(xpath_nexthop, ab_xpath, sizeof(xpath_nexthop));
+
+		nb_cli_enqueue_change(vty, xpath_nexthop, NB_OP_MODIFY, nh4_str);
+	}
+
 	strlcpy(xpath_locator_name, xpath_sid, sizeof(xpath_locator_name));
 	strlcat(xpath_locator_name, FRR_STATIC_SRV6_SID_LOCATOR_NAME_XPATH,
 		sizeof(xpath_locator_name));
@@ -1401,7 +1423,7 @@ DEFPY_YANG(srv6_sid, srv6_sid_cmd,
 }
 
 DEFPY_YANG(no_srv6_sid, no_srv6_sid_cmd,
-      "no sid X:X::X:X/M [locator NAME$locator_name] [behavior <uN | uA interface INTERFACE$interface [nexthop X:X::X:X$nh6] | uDT6 vrf VIEWVRFNAME | uDT4 vrf VIEWVRFNAME | uDT46 vrf VIEWVRFNAME>]",
+      "no sid X:X::X:X/M [locator NAME$locator_name] [behavior <uN | uA interface INTERFACE$interface [nexthop X:X::X:X$nh6] | uDX4 interface INTERFACE$interface nexthop A.B.C.D$nh4 | uDX6 interface INTERFACE$interface nexthop X:X::X:X$nh6 | uDT6 vrf VIEWVRFNAME | uDT4 vrf VIEWVRFNAME | uDT46 vrf VIEWVRFNAME>]",
       NO_STR
 	  "Configure SRv6 SID\n"
       "Specify SRv6 SID\n"
@@ -1410,6 +1432,16 @@ DEFPY_YANG(no_srv6_sid, no_srv6_sid_cmd,
       "Specify SRv6 SID behavior\n"
       "Apply the code to a uN SID\n"
       "Behavior uA\n"
+      "Configure the interface\n"
+      "Interface name\n"
+      "Configure the nexthop\n"
+      "IPv6 address of the nexthop\n"
+      "Behavior uDX4 (End.DX4 with NEXT-CSID)\n"
+      "Configure the interface\n"
+      "Interface name\n"
+      "Configure the nexthop\n"
+      "IPv4 address of the nexthop\n"
+      "Behavior uDX6 (End.DX6 with NEXT-CSID)\n"
       "Configure the interface\n"
       "Interface name\n"
       "Configure the nexthop\n"
@@ -1927,7 +1959,10 @@ static void srv6_sid_cli_show(struct vty *vty, const struct lyd_node *sid, bool 
 
 		if (yang_dnode_exists(sid, "paths[path-index=0]/next-hop")) {
 			yang_dnode_get_ip(&nexthop, sid, "paths[path-index=0]/next-hop");
-			vty_out(vty, " nexthop %pI6", &nexthop.ipaddr_v6);
+			if (IS_IPADDR_V4(&nexthop))
+				vty_out(vty, " nexthop %pI4", &nexthop.ipaddr_v4);
+			else
+				vty_out(vty, " nexthop %pI6", &nexthop.ipaddr_v6);
 		}
 	}
 

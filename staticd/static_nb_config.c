@@ -1419,14 +1419,28 @@ int routing_control_plane_protocols_control_plane_protocol_staticd_segment_routi
 	struct ipaddr nexthop;
 
 	switch (args->event) {
-	case NB_EV_VALIDATE:
-		yang_dnode_get_ip(&nexthop, args->dnode, "../next-hop");
-		if (!IS_IPADDR_V6(&nexthop)) {
+	case NB_EV_VALIDATE: {
+		enum srv6_endpoint_behavior_codepoint behavior;
+		struct ipaddr nh;
+
+		if (!yang_dnode_exists(args->dnode, "../../behavior"))
+			break;
+
+		behavior = yang_dnode_get_enum(args->dnode, "../../behavior");
+		yang_dnode_get_ip(&nh, args->dnode, NULL);
+
+		if (SRV6_BEHAVIOR_IS_DX4(behavior) && !IS_IPADDR_V4(&nh)) {
 			snprintf(args->errmsg, args->errmsg_len,
-				 "%% Nexthop must be an IPv6 address");
+				 "%% uDX4 behavior requires an IPv4 nexthop");
+			return NB_ERR_VALIDATION;
+		}
+		if (SRV6_BEHAVIOR_IS_DX6(behavior) && !IS_IPADDR_V6(&nh)) {
+			snprintf(args->errmsg, args->errmsg_len,
+				 "%% uDX6 behavior requires an IPv6 nexthop");
 			return NB_ERR_VALIDATION;
 		}
 		break;
+	}
 	case NB_EV_ABORT:
 	case NB_EV_PREPARE:
 		break;
@@ -1443,7 +1457,10 @@ int routing_control_plane_protocols_control_plane_protocol_staticd_segment_routi
 			static_zebra_srv6_sid_uninstall(sid);
 
 		yang_dnode_get_ip(&nexthop, args->dnode, "../next-hop");
-		sid->attributes.nh6 = nexthop.ipaddr_v6;
+		if (IS_IPADDR_V6(&nexthop))
+			sid->attributes.nh6 = nexthop.ipaddr_v6;
+		else
+			sid->attributes.nh4 = nexthop.ipaddr_v4;
 
 		break;
 	}

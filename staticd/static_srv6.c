@@ -68,6 +68,9 @@ static bool is_sid_update_required(struct interface *ifp, struct static_srv6_sid
 	bool is_ua = (sid->behavior == SRV6_ENDPOINT_BEHAVIOR_END_X ||
 		      sid->behavior == SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID);
 
+	/* Check if the SID's behavior is one of the uDX4/uDX6 variants. */
+	bool is_dx = SRV6_BEHAVIOR_IS_DX(sid->behavior);
+
 	/* Check if the SID's behavior is one of the uN variants. */
 	bool is_un = (sid->behavior == SRV6_ENDPOINT_BEHAVIOR_END ||
 		      sid->behavior == SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID);
@@ -87,6 +90,15 @@ static bool is_sid_update_required(struct interface *ifp, struct static_srv6_sid
 		/*
 		 * 2. SID is uA. uA SIDs are associated with a specific interface defined in their attributes.
 		 *    Therefore, an update is needed if the provided interface 'ifp' matches the SID's associated interface.
+		 */
+		if (strmatch(sid->attributes.ifname, ifp->name))
+			return true;
+	}
+
+	if (is_dx) {
+		/*
+		 * 2b. SID is uDX4/uDX6. Like uA, these SIDs are associated with a specific interface.
+		 *     An update is needed if the provided interface 'ifp' matches the SID's associated interface.
 		 */
 		if (strmatch(sid->attributes.ifname, ifp->name))
 			return true;

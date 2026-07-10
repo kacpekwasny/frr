@@ -1,0 +1,58 @@
+{
+    "fcbb:bbbb:1:fe50::/64": [
+        {
+            "prefix": "fcbb:bbbb:1:fe50::/64",
+            "prefixLen": 64,
+            "protocol": "static",
+            "vrfName": "default",
+            "selected": true,
+            "destSelected": true,
+            "distance": 1,
+            "metric": 0,
+            "installed": true,
+            "nexthops": [
+                {
+                    "fib": true,
+                    "directlyConnected": true,
+                    "interfaceName": "r1-eth0",
+                    "active": true,
+                    "seg6local": {
+                        "action": "uDX4"
+                    },
+                    "seg6localContext": {
+                        "nh4": "10.0.0.2",
+                        "interfaceName": "r1-eth0"
+                    }
+                }
+            ]
+        }
+    ],
+    "fcbb:bbbb:1:fe60::/64": [
+        {
+            "prefix": "fcbb:bbbb:1:fe60::/64",
+            "prefixLen": 64,
+            "protocol": "static",
+            "vrfName": "default",
+            "selected": true,
+            "destSelected": true,
+            "distance": 1,
+            "metric": 0,
+            "installed": true,
+            "nexthops": [
+                {
+                    "fib": true,
+                    "directlyConnected": true,
+                    "interfaceName": "r1-eth0",
+                    "active": true,
+                    "seg6local": {
+                        "action": "uDX6"
+                    },
+                    "seg6localContext": {
+                        "nh6": "2001::2",
+                        "interfaceName": "r1-eth0"
+                    }
+                }
+            ]
+        }
+    ]
+}

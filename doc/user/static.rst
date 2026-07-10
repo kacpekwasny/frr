@@ -236,18 +236,20 @@ SRv6 Static SIDs Commands
    Move from srv6 node to static-sids node. In this static-sids node, user can
    configure static SRv6 SIDs.
 
-.. clicmd:: sid X:X::X:X/M locator NAME behavior <uN|uA|uDT4|uDT6|uDT46> [vrf VRF] [interface IFNAME [nexthop X:X::X:X]]
+.. clicmd:: sid X:X::X:X/M locator NAME behavior <uN|uA|uDX4|uDX6|uDT4|uDT6|uDT46> [vrf VRF] [interface IFNAME [nexthop X:X::X:X]] [nexthop A.B.C.D]
 
    Specify the locator sid manually. Configuring a local sid in a purely static mode
    by specifying the sid value would generate a unique SID.
    This feature will support the configuration of static SRv6 decapsulation on the system.
 
-   It supports the following behaviors: uN, uA, uDT4, uDT6, uDT46.
+   It supports the following behaviors: uN, uA, uDX4, uDX6, uDT4, uDT6, uDT46.
 
    When configuring the local sid, if the action is set to 'uN', no vrf should be set.
    For uDT4, uDT6 and uDT46, it is necessary to specify a specific vrf.
    The uA behavior requires the outgoing interface and optionally the IPv6 address of the Layer 3 adjacency
    to which the packet should be forwarded.
+   The uDX4 behavior requires the outgoing interface and the IPv4 address of the nexthop (per RFC 8986 §4.8).
+   The uDX6 behavior requires the outgoing interface and the IPv6 address of the nexthop (per RFC 8986 §4.7).
 
 ::
 
@@ -259,6 +261,8 @@ SRv6 Static SIDs Commands
    router(config-srv6-sids)# sid fcbb:bbbb:1:fe02::/64 locator LOC1 behavior uDT4 vrf Vrf1
    router(config-srv6-sids)# sid fcbb:bbbb:1:fe03::/64 locator LOC1 behavior uDT46 vrf Vrf2
    router(config-srv6-sids)# sid fcbb:bbbb:1:fe04::/64 locator LOC1 behavior uA interface eth0 nexthop 2001::2
+   router(config-srv6-sids)# sid fcbb:bbbb:1:fe05::/64 locator LOC1 behavior uDX4 interface eth0 nexthop 10.0.0.2
+   router(config-srv6-sids)# sid fcbb:bbbb:1:fe06::/64 locator LOC1 behavior uDX6 interface eth0 nexthop 2001::3
 
    router(config-srv6-locator)# show run
    ...
@@ -269,5 +273,7 @@ SRv6 Static SIDs Commands
       sid    fcbb:bbbb:1:fe02::/64 locator LOC1 behavior uDT4 vrf Vrf1
       sid    fcbb:bbbb:1:fe03::/64 locator LOC1 behavior uDT46 vrf Vrf2
       sid    fcbb:bbbb:1:fe04::/64 locator LOC1 behavior uA interface eth0 nexthop 2001::2
+      sid    fcbb:bbbb:1:fe05::/64 locator LOC1 behavior uDX4 interface eth0 nexthop 10.0.0.2
+      sid    fcbb:bbbb:1:fe06::/64 locator LOC1 behavior uDX6 interface eth0 nexthop 2001::3
        !
    ...

@@ -724,6 +724,34 @@ void static_zebra_srv6_sid_install(struct static_srv6_sid *sid)
 		ctx.ifindex = ifp->ifindex;
 		SET_SRV6_FLV_OP(ctx.flv.flv_ops, ZEBRA_SEG6_LOCAL_FLV_OP_NEXT_CSID);
 		break;
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX4_USID:
+		action = ZEBRA_SEG6_LOCAL_ACTION_END_DX4;
+		ctx.nh4 = sid->attributes.nh4;
+
+		/* Lookup interface */
+		ifp = if_lookup_by_name(sid->attributes.ifname, VRF_DEFAULT);
+		if (!ifp) {
+			zlog_warn("Failed to install SID %pFX: failed to get interface %s",
+				  &sid->addr, sid->attributes.ifname);
+			return;
+		}
+		ctx.ifindex = ifp->ifindex;
+		SET_SRV6_FLV_OP(ctx.flv.flv_ops, ZEBRA_SEG6_LOCAL_FLV_OP_NEXT_CSID);
+		break;
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX6_USID:
+		action = ZEBRA_SEG6_LOCAL_ACTION_END_DX6;
+		ctx.nh6 = sid->attributes.nh6;
+
+		/* Lookup interface */
+		ifp = if_lookup_by_name(sid->attributes.ifname, VRF_DEFAULT);
+		if (!ifp) {
+			zlog_warn("Failed to install SID %pFX: failed to get interface %s",
+				  &sid->addr, sid->attributes.ifname);
+			return;
+		}
+		ctx.ifindex = ifp->ifindex;
+		SET_SRV6_FLV_OP(ctx.flv.flv_ops, ZEBRA_SEG6_LOCAL_FLV_OP_NEXT_CSID);
+		break;
 	case SRV6_ENDPOINT_BEHAVIOR_END_PSP_USD:
 	case SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID_PSP_USD:
 	case SRV6_ENDPOINT_BEHAVIOR_END_X:
@@ -731,6 +759,8 @@ void static_zebra_srv6_sid_install(struct static_srv6_sid *sid)
 	case SRV6_ENDPOINT_BEHAVIOR_END_X_PSP_USD:
 	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP:
 	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP_USD:
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX4:
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX6:
 	case SRV6_ENDPOINT_BEHAVIOR_END_B6_ENCAPS:
 	case SRV6_ENDPOINT_BEHAVIOR_END_B6_ENCAPS_RED:
 	case SRV6_ENDPOINT_BEHAVIOR_END_B6_ENCAPS_NEXT_CSID:
@@ -926,6 +956,32 @@ void static_zebra_srv6_sid_uninstall(struct static_srv6_sid *sid)
 		ctx.ifindex = ifp->ifindex;
 		SET_SRV6_FLV_OP(ctx.flv.flv_ops, ZEBRA_SEG6_LOCAL_FLV_OP_NEXT_CSID);
 		break;
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX4_USID:
+		action = ZEBRA_SEG6_LOCAL_ACTION_END_DX4;
+		ctx.nh4 = sid->attributes.nh4;
+
+		ifp = if_lookup_by_name(sid->attributes.ifname, VRF_DEFAULT);
+		if (!ifp) {
+			zlog_warn("Failed to uninstall SID %pFX: failed to get interface %s",
+				  &sid->addr, sid->attributes.ifname);
+			return;
+		}
+		ctx.ifindex = ifp->ifindex;
+		SET_SRV6_FLV_OP(ctx.flv.flv_ops, ZEBRA_SEG6_LOCAL_FLV_OP_NEXT_CSID);
+		break;
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX6_USID:
+		action = ZEBRA_SEG6_LOCAL_ACTION_END_DX6;
+		ctx.nh6 = sid->attributes.nh6;
+
+		ifp = if_lookup_by_name(sid->attributes.ifname, VRF_DEFAULT);
+		if (!ifp) {
+			zlog_warn("Failed to uninstall SID %pFX: failed to get interface %s",
+				  &sid->addr, sid->attributes.ifname);
+			return;
+		}
+		ctx.ifindex = ifp->ifindex;
+		SET_SRV6_FLV_OP(ctx.flv.flv_ops, ZEBRA_SEG6_LOCAL_FLV_OP_NEXT_CSID);
+		break;
 	case SRV6_ENDPOINT_BEHAVIOR_END_PSP_USD:
 	case SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID_PSP_USD:
 	case SRV6_ENDPOINT_BEHAVIOR_END_X:
@@ -933,6 +989,8 @@ void static_zebra_srv6_sid_uninstall(struct static_srv6_sid *sid)
 	case SRV6_ENDPOINT_BEHAVIOR_END_X_PSP_USD:
 	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP:
 	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP_USD:
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX4:
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX6:
 	case SRV6_ENDPOINT_BEHAVIOR_END_B6_ENCAPS:
 	case SRV6_ENDPOINT_BEHAVIOR_END_B6_ENCAPS_RED:
 	case SRV6_ENDPOINT_BEHAVIOR_END_B6_ENCAPS_NEXT_CSID:
@@ -1107,6 +1165,28 @@ extern void static_zebra_request_srv6_sid(struct static_srv6_sid *sid)
 		}
 		ctx.ifindex = ifp->ifindex;
 		break;
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX4_USID:
+		ctx.behavior = ZEBRA_SEG6_LOCAL_ACTION_END_DX4;
+		ctx.nh4 = sid->attributes.nh4;
+		ifp = if_lookup_by_name(sid->attributes.ifname, VRF_DEFAULT);
+		if (!ifp) {
+			zlog_warn("Failed to request SRv6 SID %pFX: interface %s does not exist",
+				  &sid->addr, sid->attributes.ifname);
+			return;
+		}
+		ctx.ifindex = ifp->ifindex;
+		break;
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX6_USID:
+		ctx.behavior = ZEBRA_SEG6_LOCAL_ACTION_END_DX6;
+		ctx.nh6 = sid->attributes.nh6;
+		ifp = if_lookup_by_name(sid->attributes.ifname, VRF_DEFAULT);
+		if (!ifp) {
+			zlog_warn("Failed to request SRv6 SID %pFX: interface %s does not exist",
+				  &sid->addr, sid->attributes.ifname);
+			return;
+		}
+		ctx.ifindex = ifp->ifindex;
+		break;
 	case SRV6_ENDPOINT_BEHAVIOR_END_PSP_USD:
 	case SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID_PSP_USD:
 	case SRV6_ENDPOINT_BEHAVIOR_END_X:
@@ -1114,6 +1194,8 @@ extern void static_zebra_request_srv6_sid(struct static_srv6_sid *sid)
 	case SRV6_ENDPOINT_BEHAVIOR_END_X_PSP_USD:
 	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP:
 	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP_USD:
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX4:
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX6:
 	case SRV6_ENDPOINT_BEHAVIOR_OPAQUE:
 	case SRV6_ENDPOINT_BEHAVIOR_RESERVED:
 	case SRV6_ENDPOINT_BEHAVIOR_END_B6_ENCAPS:
@@ -1199,6 +1281,28 @@ extern void static_zebra_release_srv6_sid(struct static_srv6_sid *sid)
 		}
 		ctx.ifindex = ifp->ifindex;
 		break;
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX4_USID:
+		ctx.behavior = ZEBRA_SEG6_LOCAL_ACTION_END_DX4;
+		ctx.nh4 = sid->attributes.nh4;
+		ifp = if_lookup_by_name(sid->attributes.ifname, VRF_DEFAULT);
+		if (!ifp) {
+			zlog_warn("Failed to request SRv6 SID %pFX: interface %s does not exist",
+				  &sid->addr, sid->attributes.ifname);
+			return;
+		}
+		ctx.ifindex = ifp->ifindex;
+		break;
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX6_USID:
+		ctx.behavior = ZEBRA_SEG6_LOCAL_ACTION_END_DX6;
+		ctx.nh6 = sid->attributes.nh6;
+		ifp = if_lookup_by_name(sid->attributes.ifname, VRF_DEFAULT);
+		if (!ifp) {
+			zlog_warn("Failed to request SRv6 SID %pFX: interface %s does not exist",
+				  &sid->addr, sid->attributes.ifname);
+			return;
+		}
+		ctx.ifindex = ifp->ifindex;
+		break;
 	case SRV6_ENDPOINT_BEHAVIOR_END_PSP_USD:
 	case SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID_PSP_USD:
 	case SRV6_ENDPOINT_BEHAVIOR_END_X:
@@ -1206,6 +1310,8 @@ extern void static_zebra_release_srv6_sid(struct static_srv6_sid *sid)
 	case SRV6_ENDPOINT_BEHAVIOR_END_X_PSP_USD:
 	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP:
 	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP_USD:
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX4:
+	case SRV6_ENDPOINT_BEHAVIOR_END_DX6:
 	case SRV6_ENDPOINT_BEHAVIOR_OPAQUE:
 	case SRV6_ENDPOINT_BEHAVIOR_RESERVED:
 	case SRV6_ENDPOINT_BEHAVIOR_END_B6_ENCAPS:
