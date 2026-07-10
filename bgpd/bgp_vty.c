@@ -19354,6 +19354,12 @@ static void bgp_vpn_policy_config_write_afi(struct vty *vty, struct bgp *bgp,
 		return;
 
 	if (CHECK_FLAG(bgp->vpn_policy[afi].flags,
+		       BGP_VPN_POLICY_TOVPN_RD_SET)) {
+		vty_out(vty, "%*srd vpn export %s\n", indent, "",
+			bgp->vpn_policy[afi].tovpn_rd_pretty);
+	}
+
+	if (CHECK_FLAG(bgp->vpn_policy[afi].flags,
 		BGP_VPN_POLICY_TOVPN_LABEL_AUTO)) {
 
 		vty_out(vty, "%*slabel vpn export %s\n", indent, "", "auto");
