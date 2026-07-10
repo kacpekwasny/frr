@@ -1,3 +1,9 @@
+frr (10.6.1-4) unstable; urgency=medium
+
+  * PR #22: BGP SRv6 per-CE / per-prefix End.DX4/DX6 VPN SID allocation
+
+ -- Dawid Kopec <dkopec@akamai.com>  Fri, 10 Jul 2026 13:27:14 +0000
+
 frr (10.6.1-3) unstable; urgency=medium
 
   * PR #21: SRv6 static End.DX4/DX6 (uDX4/uDX6) support
