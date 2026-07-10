@@ -6465,6 +6465,29 @@ void zebra_evpn_stale_entries_cleanup(uint64_t gr_cleanup_time)
 	}
 }
 
+/*
+ * Returns true if any active or stale BGP client currently has GR enabled.
+ * Used to guard shared EVPN state from being wiped when a single BGP
+ * session (e.g. a secondary instance) disconnects with GR disabled while
+ * another session still has GR active.
+ */
+static bool zebra_evpn_any_bgp_gr_enabled(void)
+{
+	struct zserv *c;
+
+	frr_each (zserv_client_list, &zrouter.client_list, c) {
+		if (c->proto == ZEBRA_ROUTE_BGP && !DYNAMIC_CLIENT_GR_DISABLED(c))
+			return true;
+	}
+
+	frr_each (zserv_stale_client_list, &zrouter.stale_client_list, c) {
+		if (c->proto == ZEBRA_ROUTE_BGP && !DYNAMIC_CLIENT_GR_DISABLED(c))
+			return true;
+	}
+
+	return false;
+}
+
 /* Cleanup BGP EVPN configuration upon client disconnect */
 static int zebra_evpn_bgp_cfg_clean_up(struct zserv *client)
 {
@@ -6497,6 +6520,19 @@ static int zebra_evpn_cfg_clean_up(struct zserv *client)
 {
 	if (client->proto == ZEBRA_ROUTE_BGP) {
 		if (DYNAMIC_CLIENT_GR_DISABLED(client)) {
+			/*
+			 * This BGP session has GR disabled, but EVPN state is
+			 * shared across all BGP sessions.  Only wipe it if no
+			 * other active or stale BGP client still has GR enabled;
+			 * otherwise the live session's GR would be broken.
+			 */
+			if (zebra_evpn_any_bgp_gr_enabled()) {
+				if (IS_ZEBRA_DEBUG_EVENT)
+					zlog_debug(
+						"EVPN-GR: client bgp (session %u) has GR disabled but another BGP session has GR enabled. Retaining EVPN entries",
+						client->session_id);
+				return 0;
+			}
 			if (IS_ZEBRA_DEBUG_EVENT)
 				zlog_debug(
 					"EVPN-GR: client bgp has GR disabled. Cleaning up EVPN entries");
