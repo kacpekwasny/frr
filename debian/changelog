@@ -1,3 +1,9 @@
+frr (10.6.1-2) unstable; urgency=medium
+
+  * PR #20: zebra: Graceful Restart stale-route state-machine fixes
+
+ -- Dawid Kopec <dkopec@akamai.com>  Fri, 10 Jul 2026 13:26:08 +0000
+
 frr (10.6.1-1) unstable; urgency=medium
 
   * bgpd: fix use-underlays-nexthop-weight flag identifier mismatch
