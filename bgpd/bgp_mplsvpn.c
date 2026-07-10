@@ -35,6 +35,8 @@
 #include "bgpd/bgp_evpn.h"
 #include "bgpd/bgp_memory.h"
 #include "bgpd/bgp_aspath.h"
+#include "bgpd/bgp_srv6_per_nexthop.h"
+#include "bgpd/bgp_srv6_per_prefix.h"
 
 #ifdef ENABLE_BGP_VNC
 #include "bgpd/rfapi/rfapi_backend.h"
@@ -1744,6 +1746,317 @@ vpn_leak_from_vrf_get_per_nexthop_label(afi_t afi, struct bgp_path_info *pi,
 							afi);
 }
 
+/*
+ * Fill the SRv6 L3 Service TLV with a user-specified explicit End.DX4/DX6 SID
+ * for this specific route prefix.  The SID and its DX endpoint behaviour are
+ * applied before the automatic per-CE and per-VRF allocators are tried, so a
+ * configured per-prefix SID always takes precedence.
+ *
+ * Returns true if the attribute was set (and the route ready to be leaked),
+ * false otherwise (no config for this prefix, or locator not yet available).
+ */
+static bool
+vpn_leak_from_vrf_fill_srv6_per_prefix(struct attr *attr, struct bgp *from_bgp,
+				       struct bgp *to_bgp, afi_t afi,
+				       struct bgp_path_info *path_vrf,
+				       mpls_label_t *label)
+{
+	int debug = BGP_DEBUG(vpn, VPN_LEAK_LABEL);
+	const struct prefix *p = bgp_dest_get_prefix(path_vrf->net);
+	struct bgp_srv6_per_prefix_sid *entry;
+	struct srv6_locator *locator;
+
+	entry = bgp_srv6_per_prefix_sid_lookup(
+		&from_bgp->srv6_sids_per_prefix[afi], p);
+	if (!entry)
+		return false;
+
+	/*
+	 * If we haven't resolved the locator for this entry yet, try now.
+	 * We use the same locator that the VRF would use for per-AF/per-CE
+	 * advertisement so that the TLV structure fields are consistent.
+	 */
+	if (!entry->locator) {
+		locator = bgp_srv6_locator_lookup(from_bgp, to_bgp);
+		if (!locator) {
+			if (debug)
+				zlog_debug("%s: no locator for per-prefix SID %pI6 on prefix %pFX",
+					   __func__, &entry->sid, p);
+			return false;
+		}
+		entry->locator = srv6_locator_alloc(locator->name);
+		srv6_locator_copy(entry->locator, locator);
+		/* Install the localsid now that the locator is known */
+		bgp_srv6_per_prefix_sid_localsid(entry, true);
+	}
+
+	locator = entry->locator;
+
+	/*
+	 * Use the full-SID (no transposition) encoding so we don't have to
+	 * compute function-bit offsets ourselves.  Transposition is an
+	 * RFC-optional optimisation; all implementations must support the
+	 * transposition_len=0 form.
+	 */
+	encode_label(MPLS_LABEL_IMPLICIT_NULL, label);
+
+	attr->srv6_l3service = XCALLOC(MTYPE_BGP_SRV6_L3SERVICE,
+				       sizeof(struct bgp_attr_srv6_l3service));
+	attr->srv6_l3service->sid_flags = 0x00;
+
+	if (afi == AFI_IP)
+		attr->srv6_l3service->endpoint_behavior =
+			CHECK_FLAG(locator->flags, SRV6_LOCATOR_USID)
+				? SRV6_ENDPOINT_BEHAVIOR_END_DX4_USID
+				: SRV6_ENDPOINT_BEHAVIOR_END_DX4;
+	else
+		attr->srv6_l3service->endpoint_behavior =
+			CHECK_FLAG(locator->flags, SRV6_LOCATOR_USID)
+				? SRV6_ENDPOINT_BEHAVIOR_END_DX6_USID
+				: SRV6_ENDPOINT_BEHAVIOR_END_DX6;
+
+	attr->srv6_l3service->loc_block_len = locator->block_bits_length;
+	attr->srv6_l3service->loc_node_len = locator->node_bits_length;
+	attr->srv6_l3service->func_len = locator->function_bits_length;
+	attr->srv6_l3service->arg_len = locator->argument_bits_length;
+	/* No transposition: put the full SID in the SID field */
+	attr->srv6_l3service->transposition_len = 0;
+	attr->srv6_l3service->transposition_offset = 0;
+	IPV6_ADDR_COPY(&attr->srv6_l3service->sid, &entry->sid);
+
+	if (debug)
+		zlog_debug("%s: attached explicit per-prefix SRv6 SID %pI6 (behavior 0x%04x) for prefix %pFX",
+			   __func__, &entry->sid,
+			   attr->srv6_l3service->endpoint_behavior, p);
+
+	return true;
+}
+
+/*
+ * Fill the SRv6 L3 Service TLV with a per-CE (per-nexthop) End.DX4/DX6 SID.
+ * Returns true if the SID was attached, false if not (SID not yet allocated,
+ * no nexthop, etc.).
+ */
+static bool vpn_leak_from_vrf_fill_srv6_per_ce(struct attr *attr,
+					       struct bgp *from_bgp,
+					       struct bgp *to_bgp,
+					       afi_t afi,
+					       struct bgp_path_info *path_vrf,
+					       mpls_label_t *label)
+{
+	int debug = BGP_DEBUG(vpn, VPN_LEAK_LABEL);
+	struct bgp_path_info *bpi_ultimate = bgp_get_imported_bpi_ultimate(path_vrf);
+	struct bgp_nexthop_cache *bnc;
+	struct bgp_srv6_per_nexthop_cache *bsnc;
+	struct bgp_srv6_per_nexthop_cache_head *tree;
+	struct prefix nh_gate = {0};
+	struct prefix *nh_pfx = NULL;
+	struct srv6_locator *locator;
+	struct srv6_sid_ctx ctx = {};
+	uint32_t sid_func = 0;
+	struct in6_addr tovpn_sid = {};
+	struct bgp *bgp_nexthop = NULL;
+	afi_t nh_afi;
+	bool nh_valid;
+	bool is_bgp_static_route;
+
+	if (!CHECK_FLAG(from_bgp->vpn_policy[afi].flags,
+			BGP_VPN_POLICY_TOVPN_SID_PER_CE))
+		return false;
+
+	/* We need a per-AF SID config and locator */
+	if (!is_srv6_vpn_afi_enabled(from_bgp, afi))
+		return false;
+
+	locator = bgp_srv6_locator_lookup(from_bgp, to_bgp);
+	if (!locator)
+		return false;
+
+	is_bgp_static_route = bpi_ultimate->sub_type == BGP_ROUTE_STATIC &&
+			      bpi_ultimate->type == ZEBRA_ROUTE_BGP;
+
+	/* Resolve the nexthop via NHT (this creates the BNC if needed) */
+	if (path_vrf->extra && path_vrf->extra->vrfleak &&
+	    path_vrf->extra->vrfleak->bgp_orig)
+		bgp_nexthop = path_vrf->extra->vrfleak->bgp_orig;
+	else
+		bgp_nexthop = from_bgp;
+
+	nh_afi = BGP_ATTR_NH_AFI(afi, path_vrf->attr);
+	nh_valid = bgp_find_or_add_nexthop(from_bgp, bgp_nexthop, nh_afi,
+					   SAFI_UNICAST, path_vrf, NULL, 0,
+					   NULL, NULL);
+
+	if (!nh_valid && is_bgp_static_route &&
+	    !CHECK_FLAG(from_bgp->flags, BGP_FLAG_IMPORT_CHECK)) {
+		/* "network" prefixes without valid NH — fall back to per-VRF */
+		if (debug)
+			zlog_debug("%s: static route without valid NH, fallback to per-VRF",
+				   __func__);
+		return false;
+	}
+
+	/* Extract the nexthop from the BNC cache */
+	bnc = path_vrf->nexthop;
+	if (!bnc || !bnc->nexthop) {
+		if (debug)
+			zlog_debug("%s: no nexthop cache for path", __func__);
+		return false;
+	}
+
+	if (bnc->nexthop_num > 1) {
+		/* ECMP — cannot use per-CE, fall back to per-VRF */
+		if (debug)
+			zlog_debug("%s: ECMP nexthop, fallback to per-VRF",
+				   __func__);
+		return false;
+	}
+
+	switch (bnc->nexthop->type) {
+	case NEXTHOP_TYPE_IPV4:
+	case NEXTHOP_TYPE_IPV4_IFINDEX:
+		nh_gate.family = AF_INET;
+		nh_gate.prefixlen = IPV4_MAX_BITLEN;
+		IPV4_ADDR_COPY(&nh_gate.u.prefix4, &bnc->nexthop->gate.ipv4);
+		nh_pfx = &nh_gate;
+		break;
+	case NEXTHOP_TYPE_IPV6:
+	case NEXTHOP_TYPE_IPV6_IFINDEX:
+		nh_gate.family = AF_INET6;
+		nh_gate.prefixlen = IPV6_MAX_BITLEN;
+		IPV6_ADDR_COPY(&nh_gate.u.prefix6, &bnc->nexthop->gate.ipv6);
+		nh_pfx = &nh_gate;
+		break;
+	case NEXTHOP_TYPE_IFINDEX:
+		/* Directly connected nexthop — use the BNC prefix (original NH IP) */
+		nh_pfx = &bnc->prefix;
+		break;
+	case NEXTHOP_TYPE_BLACKHOLE:
+		if (debug)
+			zlog_debug("%s: blackhole nexthop, skipping", __func__);
+		return false;
+	}
+
+	/* Find or allocate a per-CE cache entry */
+	tree = &from_bgp->srv6_sids_per_nexthop[family2afi(nh_pfx->family)];
+	bsnc = bgp_srv6_per_nexthop_find(tree, nh_pfx);
+	if (!bsnc) {
+		bsnc = bgp_srv6_per_nexthop_new(tree, nh_pfx);
+		bsnc->bgp = from_bgp;
+
+		/* Determine desired endpoint behavior */
+		if (nh_pfx->family == AF_INET) {
+			ctx.behavior = ZEBRA_SEG6_LOCAL_ACTION_END_DX4;
+			ctx.nh4 = nh_pfx->u.prefix4;
+			bsnc->endpoint_behavior =
+				CHECK_FLAG(locator->flags, SRV6_LOCATOR_USID)
+					? SRV6_ENDPOINT_BEHAVIOR_END_DX4_USID
+					: SRV6_ENDPOINT_BEHAVIOR_END_DX4;
+		} else {
+			ctx.behavior = ZEBRA_SEG6_LOCAL_ACTION_END_DX6;
+			ctx.nh6 = nh_pfx->u.prefix6;
+			bsnc->endpoint_behavior =
+				CHECK_FLAG(locator->flags, SRV6_LOCATOR_USID)
+					? SRV6_ENDPOINT_BEHAVIOR_END_DX6_USID
+					: SRV6_ENDPOINT_BEHAVIOR_END_DX6;
+		}
+		ctx.vrf_id = from_bgp->vrf_id;
+
+		/* Request a SID from zebra */
+		if (debug)
+			zlog_debug("%s: requesting per-CE SRv6 SID for nexthop %pFX, locator %s",
+				   __func__, nh_pfx, locator->name);
+
+		if (!bgp_zebra_request_srv6_sid(&ctx, &tovpn_sid, locator->name, &sid_func)) {
+			if (debug)
+				zlog_debug("%s: failed to request SRv6 SID", __func__);
+			bgp_srv6_per_nexthop_free(bsnc);
+			return false;
+		}
+
+		bsnc->locator = srv6_locator_alloc(locator->name);
+		srv6_locator_copy(bsnc->locator, locator);
+	}
+
+	/* If this path already references this cache entry, nothing to do */
+	if (CHECK_FLAG(path_vrf->flags, BGP_PATH_SRV6_SID_PER_CE) &&
+	    path_vrf->mplsvpn.blnc.label_nexthop_cache_srv6 == bsnc) {
+		/* Same entry, check if SID is ready */
+		if (!bsnc->sid_valid) {
+			if (debug)
+				zlog_debug("%s: SID not yet allocated for nexthop %pFX",
+					   __func__, nh_pfx);
+			return false;
+		}
+		goto fill_attr;
+	}
+
+	/* Unlink from any previous per-CE cache entry */
+	bgp_srv6_per_nexthop_path_unlink(path_vrf);
+	/* Also unlink from MPLS per-nexthop if set */
+	bgp_mplsvpn_path_nh_label_unlink(path_vrf);
+
+	/* Link this path to the cache entry */
+	LIST_INSERT_HEAD(&(bsnc->paths), path_vrf, mplsvpn.blnc.label_nh_thread);
+	path_vrf->mplsvpn.blnc.label_nexthop_cache_srv6 = bsnc;
+	bsnc->path_count++;
+	SET_FLAG(path_vrf->flags, BGP_PATH_SRV6_SID_PER_CE);
+	bsnc->last_update = monotime(NULL);
+
+	/* Update the resolved nexthop */
+	if (!bsnc->nh)
+		bsnc->nh = nexthop_dup(bnc->nexthop, NULL);
+	else if (!nexthop_same(bnc->nexthop, bsnc->nh)) {
+		nexthop_free(bsnc->nh);
+		bsnc->nh = nexthop_dup(bnc->nexthop, NULL);
+	}
+
+	if (!bsnc->sid_valid) {
+		if (debug)
+			zlog_debug("%s: waiting for SRv6 SID allocation for nexthop %pFX",
+				   __func__, nh_pfx);
+		return false;
+	}
+
+fill_attr:
+	/* SID is valid — fill the attribute */
+	encode_label(bsnc->sid_transpose_label, label);
+	attr->srv6_l3service = XCALLOC(MTYPE_BGP_SRV6_L3SERVICE,
+				       sizeof(struct bgp_attr_srv6_l3service));
+	attr->srv6_l3service->sid_flags = 0x00;
+	attr->srv6_l3service->endpoint_behavior = bsnc->endpoint_behavior;
+	attr->srv6_l3service->loc_block_len = bsnc->locator->block_bits_length;
+	attr->srv6_l3service->loc_node_len = bsnc->locator->node_bits_length;
+	if (bsnc->sid_func_wide)
+		attr->srv6_l3service->func_len =
+			BGP_PREFIX_SID_SRV6_MAX_FUNCTION_LENGTH_FOR_BGP;
+	else
+		attr->srv6_l3service->func_len =
+			bsnc->locator->function_bits_length;
+	attr->srv6_l3service->arg_len = bsnc->locator->argument_bits_length;
+
+	if (attr->srv6_l3service->func_len >
+	    BGP_PREFIX_SID_SRV6_MAX_FUNCTION_LENGTH_FOR_LABEL) {
+		attr->srv6_l3service->transposition_len = 0;
+		attr->srv6_l3service->transposition_offset = 0;
+		IPV6_ADDR_COPY(&attr->srv6_l3service->sid, &bsnc->sid);
+	} else {
+		attr->srv6_l3service->transposition_len =
+			bsnc->locator->function_bits_length;
+		attr->srv6_l3service->transposition_offset =
+			bsnc->locator->block_bits_length +
+			bsnc->locator->node_bits_length;
+		IPV6_ADDR_COPY(&attr->srv6_l3service->sid,
+			       &bsnc->locator->prefix.prefix);
+	}
+
+	if (debug)
+		zlog_debug("%s: attached per-CE SRv6 SID %pI6 (behavior 0x%04x) for nexthop %pFX",
+			   __func__, &bsnc->sid, bsnc->endpoint_behavior, nh_pfx);
+
+	return true;
+}
+
 static bool vpn_leak_from_vrf_fill_srv6(struct attr *attr, struct bgp *from_bgp, afi_t afi,
 					mpls_label_t *label)
 {
@@ -2113,9 +2426,18 @@ void vpn_leak_from_vrf_update(struct bgp *to_bgp,	     /* to */
 		_vpn_leak_from_vrf_update_leak_attr(&static_attr, to_bgp, from_bgp, afi, safi,
 						    path_vrf, nexthop_self_flag, debug, &label);
 
-	if (vpn_leak_from_vrf_fill_srv6(&static_attr, from_bgp, afi, &label))
-
-		/* SRv6 */
+	if (vpn_leak_from_vrf_fill_srv6_per_prefix(&static_attr, from_bgp, to_bgp, afi, path_vrf,
+						   &label))
+		/* SRv6 explicit per-prefix (End.DX4/DX6) */
+		_vpn_leak_from_vrf_update_leak_attr(&static_attr, to_bgp, from_bgp, afi, safi,
+						    path_vrf, nexthop_self_flag, debug, &label);
+	else if (vpn_leak_from_vrf_fill_srv6_per_ce(&static_attr, from_bgp, to_bgp, afi, path_vrf,
+					       &label))
+		/* SRv6 per-CE (End.DX4/DX6) */
+		_vpn_leak_from_vrf_update_leak_attr(&static_attr, to_bgp, from_bgp, afi, safi,
+						    path_vrf, nexthop_self_flag, debug, &label);
+	else if (vpn_leak_from_vrf_fill_srv6(&static_attr, from_bgp, afi, &label))
+		/* SRv6 per-VRF (End.DT4/DT6/DT46) */
 		_vpn_leak_from_vrf_update_leak_attr(&static_attr, to_bgp, from_bgp, afi, safi,
 						    path_vrf, nexthop_self_flag, debug, &label);
 	else if (label_val == MPLS_LABEL_NONE)

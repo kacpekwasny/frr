@@ -67,6 +67,8 @@
 #include "bgpd/bgp_flowspec.h"
 #include "bgpd/bgp_conditional_adv.h"
 #include "bgpd/bgp_srv6.h"
+#include "bgpd/bgp_srv6_per_nexthop.h"
+#include "bgpd/bgp_srv6_per_prefix.h"
 #ifdef ENABLE_BGP_VNC
 #include "bgpd/rfapi/bgp_rfapi_cfg.h"
 #endif
@@ -10691,6 +10693,210 @@ DEFPY (af_sid_vpn_export,
 	return CMD_SUCCESS;
 }
 
+DEFUN(af_sid_vpn_export_allocation_mode,
+      af_sid_vpn_export_allocation_mode_cmd,
+      "[no] sid vpn export allocation-mode <per-vrf|per-ce>",
+      NO_STR
+      "SID value for VRF\n"
+      "Between current address-family and vpn\n"
+      "For routes leaked from current address-family to vpn\n"
+      "SID allocation mode\n"
+      "Allocate one SID for all BGP updates of the VRF (End.DT)\n"
+      "Allocate a SID per connected next-hop / CE (End.DX)\n")
+{
+	VTY_DECLVAR_CONTEXT(bgp, bgp);
+	afi_t afi;
+	bool old_per_ce, new_per_ce;
+	int idx = 0;
+	bool no = false;
+	bool sid_per_ce = false;
+	bool sid_per_vrf = false;
+
+	if (argv_find(argv, argc, "no", &idx))
+		no = true;
+
+	idx = 0;
+	if (argv_find(argv, argc, "per-ce", &idx))
+		sid_per_ce = true;
+
+	idx = 0;
+	if (argv_find(argv, argc, "per-vrf", &idx))
+		sid_per_vrf = true;
+
+	afi = vpn_policy_getafi(vty, bgp, false);
+	if (afi == AFI_MAX)
+		return CMD_WARNING_CONFIG_FAILED;
+
+	/* per-CE mode requires per-AF SID config, not per-VRF */
+	if (sid_per_ce && is_srv6_vpn_vrf_enabled(bgp)) {
+		vty_out(vty,
+			"sid vpn per-vrf is configured.\n"
+			"Remove it first before configuring per-CE mode.\n");
+		return CMD_WARNING_CONFIG_FAILED;
+	}
+
+	old_per_ce = !!CHECK_FLAG(bgp->vpn_policy[afi].flags,
+				  BGP_VPN_POLICY_TOVPN_SID_PER_CE);
+	if (no) {
+		if (!old_per_ce && sid_per_ce)
+			return CMD_ERR_NO_MATCH;
+		if (old_per_ce && sid_per_vrf)
+			return CMD_ERR_NO_MATCH;
+		new_per_ce = false;
+	} else {
+		if (sid_per_ce)
+			new_per_ce = true;
+		else
+			new_per_ce = false;
+	}
+
+	/* no change */
+	if (old_per_ce == new_per_ce)
+		return CMD_SUCCESS;
+
+	/* per-CE is mutually exclusive with per-nexthop MPLS label mode */
+	if (new_per_ce && CHECK_FLAG(bgp->vpn_policy[afi].flags,
+				     BGP_VPN_POLICY_TOVPN_LABEL_PER_NEXTHOP)) {
+		vty_out(vty,
+			"MPLS per-nexthop label mode is configured.\n"
+			"Remove it first before configuring SRv6 per-CE mode.\n");
+		return CMD_WARNING_CONFIG_FAILED;
+	}
+
+	/*
+	 * pre-change: un-export vpn routes (vpn->vrf routes unaffected)
+	 */
+	vpn_leak_prechange(BGP_VPN_POLICY_DIR_TOVPN, afi, bgp_get_default(),
+			   bgp);
+
+	if (new_per_ce)
+		SET_FLAG(bgp->vpn_policy[afi].flags,
+			 BGP_VPN_POLICY_TOVPN_SID_PER_CE);
+	else
+		UNSET_FLAG(bgp->vpn_policy[afi].flags,
+			   BGP_VPN_POLICY_TOVPN_SID_PER_CE);
+
+	/* post-change: re-export vpn routes */
+	vpn_leak_postchange(BGP_VPN_POLICY_DIR_TOVPN, afi, bgp_get_default(),
+			    bgp);
+
+	hook_call(bgp_snmp_update_last_changed, bgp);
+	return CMD_SUCCESS;
+}
+
+/*
+ * sid vpn export route A.B.C.D/M explicit X:X::X:X
+ *      [nexthop <A.B.C.D|X:X::X:X>] [interface IFNAME]
+ *
+ * Attach a user-specified End.DX4/DX6 SID to a specific VRF route prefix.
+ * When the route is exported to the VPN table, this SID is used instead of
+ * the auto-allocated per-CE or per-VRF SID.
+ *
+ * If nexthop + interface are given, BGP also installs the corresponding
+ * seg6local localsid in the kernel.  Otherwise the operator is expected to
+ * install the localsid separately (e.g. via staticd).
+ */
+DEFPY(af_sid_vpn_export_route_explicit,
+      af_sid_vpn_export_route_explicit_cmd,
+      "[no] sid vpn export route <A.B.C.D/M$prefix4|X:X::X:X/M$prefix6>"
+      " explicit X:X::X:X$sid_value"
+      " [nexthop <A.B.C.D$nh4|X:X::X:X$nh6>]"
+      " [interface IFNAME$ifname]",
+      NO_STR
+      "SID value for VRF\n"
+      "Between current address-family and vpn\n"
+      "For routes leaked from current address-family to vpn\n"
+      "Per-route explicit SID configuration\n"
+      "Route prefix (IPv4)\n"
+      "Route prefix (IPv6)\n"
+      "Explicitly specify the SID value\n"
+      "SID value to use for this prefix\n"
+      "Override the forwarding nexthop for the localsid\n"
+      "IPv4 forwarding nexthop (End.DX4)\n"
+      "IPv6 forwarding nexthop (End.DX6)\n"
+      "Override the output interface for the localsid\n"
+      "Interface name\n")
+{
+	VTY_DECLVAR_CONTEXT(bgp, bgp);
+	afi_t afi;
+	struct prefix p = {};
+	struct bgp_srv6_per_prefix_sid *entry;
+	struct bgp_srv6_per_prefix_sid_head *tree;
+
+	afi = vpn_policy_getafi(vty, bgp, false);
+	if (afi == AFI_MAX)
+		return CMD_WARNING_CONFIG_FAILED;
+
+	/* Parse the route prefix (clippy provides typed struct pointers) */
+	if (prefix4)
+		prefix_copy(&p, (const struct prefix *)prefix4);
+	else
+		prefix_copy(&p, (const struct prefix *)prefix6);
+	apply_mask(&p);
+
+	/* AFI must match the prefix family */
+	if (afi == AFI_IP && p.family != AF_INET) {
+		vty_out(vty,
+			"%% Use 'address-family ipv4 vpn' for IPv4 prefixes\n");
+		return CMD_WARNING_CONFIG_FAILED;
+	}
+	if (afi == AFI_IP6 && p.family != AF_INET6) {
+		vty_out(vty,
+			"%% Use 'address-family ipv6 vpn' for IPv6 prefixes\n");
+		return CMD_WARNING_CONFIG_FAILED;
+	}
+
+	tree = &bgp->srv6_sids_per_prefix[afi];
+	entry = bgp_srv6_per_prefix_sid_lookup(tree, &p);
+
+	if (no) {
+		if (!entry)
+			return CMD_ERR_NO_MATCH;
+		bgp_srv6_per_prefix_sid_del(tree, entry);
+		bgp_srv6_per_prefix_sid_free(entry);
+		vpn_leak_prechange(BGP_VPN_POLICY_DIR_TOVPN, afi,
+				   bgp_get_default(), bgp);
+		vpn_leak_postchange(BGP_VPN_POLICY_DIR_TOVPN, afi,
+				    bgp_get_default(), bgp);
+		return CMD_SUCCESS;
+	}
+
+	/* Create or update the entry */
+	if (!entry) {
+		entry = bgp_srv6_per_prefix_sid_new(tree, &p);
+	} else {
+		/* Remove the old localsid before changing fields */
+		bgp_srv6_per_prefix_sid_localsid(entry, false);
+		srv6_locator_free(entry->locator);
+		entry->locator = NULL;
+	}
+
+	entry->bgp = bgp;
+	IPV6_ADDR_COPY(&entry->sid, &sid_value);
+
+	entry->has_nh4 = false;
+	entry->has_nh6 = false;
+	if (nh4_str) {
+		entry->nh4 = nh4;
+		entry->has_nh4 = true;
+	} else if (nh6_str) {
+		IPV6_ADDR_COPY(&entry->nh6, &nh6);
+		entry->has_nh6 = true;
+	}
+
+	if (ifname)
+		strlcpy(entry->ifname, ifname, sizeof(entry->ifname));
+	else
+		entry->ifname[0] = '\0';
+
+	/* Re-export to pick up the new SID */
+	vpn_leak_prechange(BGP_VPN_POLICY_DIR_TOVPN, afi, bgp_get_default(),
+			   bgp);
+	vpn_leak_postchange(BGP_VPN_POLICY_DIR_TOVPN, afi, bgp_get_default(),
+			    bgp);
+	return CMD_SUCCESS;
+}
+
 DEFPY (bgp_sid_vpn_export,
        bgp_sid_vpn_export_cmd,
        "[no] sid vpn per-vrf export <(1-4294967295)$sid_idx|auto$sid_auto|explicit$sid_explicit X:X::X:X$sid_value>",
@@ -11649,6 +11855,30 @@ DEFPY (show_bgp_srv6,
 		vty_out(vty, "  per-vrf tovpn_sid: %pI6\n", bgp->tovpn_sid);
 		vty_out(vty, "  srv6_unicast[AFI_IP].sid: %pI6\n", bgp->srv6_unicast[AFI_IP].sid);
 		vty_out(vty, "  srv6_unicast[AFI_IP6].sid: %pI6\n", bgp->srv6_unicast[AFI_IP6].sid);
+		vty_out(vty, "  per-ce sids[AFI_IP]: %zu\n",
+			bgp_srv6_per_nexthop_cache_count(
+				&bgp->srv6_sids_per_nexthop[AFI_IP]));
+		vty_out(vty, "  per-ce sids[AFI_IP6]: %zu\n",
+			bgp_srv6_per_nexthop_cache_count(
+				&bgp->srv6_sids_per_nexthop[AFI_IP6]));
+		vty_out(vty, "  per-prefix explicit sids[AFI_IP]: %zu\n",
+			bgp_srv6_per_prefix_sid_count(
+				&bgp->srv6_sids_per_prefix[AFI_IP]));
+		vty_out(vty, "  per-prefix explicit sids[AFI_IP6]: %zu\n",
+			bgp_srv6_per_prefix_sid_count(
+				&bgp->srv6_sids_per_prefix[AFI_IP6]));
+		struct bgp_srv6_per_prefix_sid *ppe;
+
+		frr_each (bgp_srv6_per_prefix_sid,
+			  &bgp->srv6_sids_per_prefix[AFI_IP], ppe)
+			vty_out(vty, "    %pFX -> %pI6 (if:%s)\n",
+				&ppe->prefix, &ppe->sid,
+				ppe->ifname[0] ? ppe->ifname : "-");
+		frr_each (bgp_srv6_per_prefix_sid,
+			  &bgp->srv6_sids_per_prefix[AFI_IP6], ppe)
+			vty_out(vty, "    %pFX -> %pI6 (if:%s)\n",
+				&ppe->prefix, &ppe->sid,
+				ppe->ifname[0] ? ppe->ifname : "-");
 	}
 
 	return CMD_SUCCESS;
@@ -19152,10 +19382,37 @@ static void bgp_vpn_policy_config_write_afi(struct vty *vty, struct bgp *bgp,
 		vty_out(vty, "%*ssid vpn export %u\n", indent, "", tovpn_sid_index);
 	}
 
-	if (CHECK_FLAG(bgp->vpn_policy[afi].flags, BGP_VPN_POLICY_TOVPN_RD_SET))
-		vty_out(vty, "%*srd vpn export %s\n", indent, "",
-			bgp->vpn_policy[afi].tovpn_rd_pretty);
+	if (CHECK_FLAG(bgp->vpn_policy[afi].flags,
+		       BGP_VPN_POLICY_TOVPN_SID_PER_CE))
+		vty_out(vty,
+			"%*ssid vpn export allocation-mode per-ce\n",
+			indent, "");
 
+        /* Per-prefix explicit SID config */
+        {
+                struct bgp_srv6_per_prefix_sid *ppe;
+                char sid_buf[INET6_ADDRSTRLEN];
+                char nh_buf[INET6_ADDRSTRLEN];
+
+                frr_each (bgp_srv6_per_prefix_sid,
+                          &bgp->srv6_sids_per_prefix[afi], ppe) {
+                        inet_ntop(AF_INET6, &ppe->sid, sid_buf, sizeof(sid_buf));
+                        vty_out(vty, "%*ssid vpn export route %pFX explicit %s",
+                                indent, "", &ppe->prefix, sid_buf);
+                        if (ppe->has_nh4) {
+                                inet_ntop(AF_INET, &ppe->nh4, nh_buf,
+                                          sizeof(nh_buf));
+                                vty_out(vty, " nexthop %s", nh_buf);
+                        } else if (ppe->has_nh6) {
+                                inet_ntop(AF_INET6, &ppe->nh6, nh_buf,
+                                          sizeof(nh_buf));
+                                vty_out(vty, " nexthop %s", nh_buf);
+                        }
+                        if (ppe->ifname[0])
+                                vty_out(vty, " interface %s", ppe->ifname);
+                        vty_out(vty, "\n");
+                }
+        }
 	if (CHECK_FLAG(bgp->vpn_policy[afi].flags,
 		       BGP_VPN_POLICY_TOVPN_NEXTHOP_SET)) {
 
@@ -22822,6 +23079,10 @@ void bgp_vty_init(void)
 	install_element(BGP_SRV6_NODE, &bgp_srv6_encap_behavior_cmd);
 	install_element(BGP_IPV4_NODE, &af_sid_vpn_export_cmd);
 	install_element(BGP_IPV6_NODE, &af_sid_vpn_export_cmd);
+	install_element(BGP_IPV4_NODE, &af_sid_vpn_export_allocation_mode_cmd);
+	install_element(BGP_IPV6_NODE, &af_sid_vpn_export_allocation_mode_cmd);
+	install_element(BGP_IPV4_NODE, &af_sid_vpn_export_route_explicit_cmd);
+	install_element(BGP_IPV6_NODE, &af_sid_vpn_export_route_explicit_cmd);
 	install_element(BGP_NODE, &bgp_sid_vpn_export_cmd);
 	install_element(BGP_IPV4_NODE, &sid_export_cmd);
 	install_element(BGP_IPV6_NODE, &sid_export_cmd);

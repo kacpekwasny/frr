@@ -1446,7 +1446,22 @@ static void bgp_zebra_announce_parse_nexthop(struct bgp_path_info *info, const s
 		num_labels = BGP_PATH_INFO_NUM_LABELS(mpinfo);
 		labels = num_labels ? mpinfo->extra->labels->label : NULL;
 
-		if (num_labels && (is_evpn || bgp_is_valid_label(&labels[0]))) {
+		/*
+		 * For SRv6 VPN routes using label transposition, the MPLS label
+		 * value is consumed as the SRv6 function (transposed into the
+		 * SID). Do not also set it as an MPLS label on the nexthop, as
+		 * ZAPI_NEXTHOP_FLAG_LABEL and ZAPI_NEXTHOP_FLAG_SEG6 are
+		 * mutually exclusive and zebra will reject the combined route.
+		 */
+		bool has_srv6_seg =
+			((mpinfo->attr->srv6_l3service &&
+			  !sid_zero_ipv6(&mpinfo->attr->srv6_l3service->sid)) ||
+			 (mpinfo->attr->srv6_vpn &&
+			  !sid_zero_ipv6(&mpinfo->attr->srv6_vpn->sid))) &&
+			!is_evpn;
+
+		if (num_labels && !has_srv6_seg &&
+		    (is_evpn || bgp_is_valid_label(&labels[0]))) {
 			enum lsp_types_t nh_label_type = ZEBRA_LSP_NONE;
 
 			if (is_evpn) {
@@ -3744,9 +3759,11 @@ static int bgp_zebra_srv6_sid_notify(ZAPI_CALLBACK_ARGS)
 	if (!locator_bgp)
 		return -1;
 
-	if (ctx.behavior == ZEBRA_SEG6_LOCAL_ACTION_END_DT6)
+	if (ctx.behavior == ZEBRA_SEG6_LOCAL_ACTION_END_DT6 ||
+	    ctx.behavior == ZEBRA_SEG6_LOCAL_ACTION_END_DX6)
 		afi = AFI_IP6;
-	else if (ctx.behavior == ZEBRA_SEG6_LOCAL_ACTION_END_DT4)
+	else if (ctx.behavior == ZEBRA_SEG6_LOCAL_ACTION_END_DT4 ||
+		 ctx.behavior == ZEBRA_SEG6_LOCAL_ACTION_END_DX4)
 		afi = AFI_IP;
 
 	/* Handle notification */
@@ -3799,8 +3816,15 @@ static int bgp_zebra_srv6_sid_notify(ZAPI_CALLBACK_ARGS)
 			label = sid_func
 				<< (BGP_PREFIX_SID_SRV6_MAX_FUNCTION_LENGTH_FOR_LABEL - func_len);
 
-		/* Un-export VPN to VRF routes */
-		if (is_srv6_vpn_enabled(bgp_vrf)) {
+		/* Un-export VPN to VRF routes.
+		 * Skip for per-CE (End.DX4/DX6) SID allocations: the per-CE handler
+		 * re-exports only the single affected path without a full flush, so
+		 * withdrawing all routes here would leave the other per-CE routes
+		 * permanently withdrawn after each callback fires.
+		 */
+		if (is_srv6_vpn_enabled(bgp_vrf) &&
+		    ctx.behavior != ZEBRA_SEG6_LOCAL_ACTION_END_DX4 &&
+		    ctx.behavior != ZEBRA_SEG6_LOCAL_ACTION_END_DX6) {
 			vpn_leak_prechange(BGP_VPN_POLICY_DIR_TOVPN, AFI_IP, bgp, bgp_vrf);
 			vpn_leak_prechange(BGP_VPN_POLICY_DIR_TOVPN, AFI_IP6, bgp, bgp_vrf);
 		}
@@ -3853,6 +3877,74 @@ static int bgp_zebra_srv6_sid_notify(ZAPI_CALLBACK_ARGS)
 			bgp_vrf->tovpn_sid = tovpn_sid;
 			bgp_vrf->tovpn_sid_locator = locator;
 			bgp_vrf->tovpn_sid_transpose_label = label;
+		} else if (ctx.behavior == ZEBRA_SEG6_LOCAL_ACTION_END_DX4 ||
+			   ctx.behavior == ZEBRA_SEG6_LOCAL_ACTION_END_DX6) {
+			/* Per-CE (per-nexthop) SID allocation */
+			struct prefix nh_pfx = {};
+			struct bgp_srv6_per_nexthop_cache *bsnc;
+			struct bgp_srv6_per_nexthop_cache_head *pnc_tree;
+			afi_t pnc_afi;
+
+			if (ctx.behavior == ZEBRA_SEG6_LOCAL_ACTION_END_DX4) {
+				nh_pfx.family = AF_INET;
+				nh_pfx.prefixlen = IPV4_MAX_BITLEN;
+				nh_pfx.u.prefix4 = ctx.nh4;
+				pnc_afi = AFI_IP;
+			} else {
+				nh_pfx.family = AF_INET6;
+				nh_pfx.prefixlen = IPV6_MAX_BITLEN;
+				nh_pfx.u.prefix6 = ctx.nh6;
+				pnc_afi = AFI_IP6;
+			}
+
+			pnc_tree = &bgp_vrf->srv6_sids_per_nexthop[pnc_afi];
+			bsnc = bgp_srv6_per_nexthop_find(pnc_tree, &nh_pfx);
+			if (!bsnc) {
+				if (BGP_DEBUG(zebra, ZEBRA))
+					zlog_debug("%s: no per-CE cache entry for nexthop %pFX",
+						   __func__, &nh_pfx);
+				XFREE(MTYPE_BGP_SRV6_SID, tovpn_sid);
+				srv6_locator_free(locator);
+				bgp_zebra_release_srv6_sid(&ctx, loc_name);
+				return -1;
+			}
+
+			/* Store the allocated SID in the cache entry */
+			bsnc->sid = sid_addr;
+			bsnc->sid_valid = true;
+			bsnc->sid_transpose_label = label;
+			bsnc->sid_func_wide = sid_wide_func;
+
+			if (BGP_DEBUG(vpn, VPN_LEAK_LABEL))
+				zlog_debug("%s: per-CE SRv6 SID %pI6 allocated for nexthop %pFX VRF %s",
+					   __func__, &sid_addr, &nh_pfx,
+					   bgp_vrf->name_pretty);
+
+			/* Register the SID */
+			sid_register(bgp, tovpn_sid, locator_bgp->name);
+			XFREE(MTYPE_BGP_SRV6_SID, tovpn_sid);
+			srv6_locator_free(locator);
+
+			/* Install the local seg6local End.DX route */
+			bgp_srv6_per_nexthop_localsid(bsnc, true);
+
+			/* Re-export affected paths */
+			{
+				struct bgp_path_info *pi;
+				struct bgp_table *table;
+
+				LIST_FOREACH(pi, &(bsnc->paths),
+					     mplsvpn.blnc.label_nh_thread) {
+					if (!pi->net)
+						continue;
+					table = bgp_dest_table(pi->net);
+					if (!table)
+						continue;
+					vpn_leak_from_vrf_update(
+						bgp_get_default(), table->bgp, pi);
+				}
+			}
+			break;
 		} else {
 			srv6_locator_free(locator);
 			if (BGP_DEBUG(zebra, ZEBRA))
@@ -3891,6 +3983,42 @@ static int bgp_zebra_srv6_sid_notify(ZAPI_CALLBACK_ARGS)
 		else if (ctx.behavior == ZEBRA_SEG6_LOCAL_ACTION_END_DT46 &&
 			 !sid_same(bgp_vrf->tovpn_sid, &sid_addr))
 			break;
+		else if (ctx.behavior == ZEBRA_SEG6_LOCAL_ACTION_END_DX4 ||
+			 ctx.behavior == ZEBRA_SEG6_LOCAL_ACTION_END_DX6) {
+			/* Per-CE SID released — find and invalidate the cache entry */
+			struct prefix nh_pfx = {};
+			struct bgp_srv6_per_nexthop_cache *bsnc;
+			struct bgp_srv6_per_nexthop_cache_head *pnc_tree;
+			afi_t pnc_afi;
+
+			if (ctx.behavior == ZEBRA_SEG6_LOCAL_ACTION_END_DX4) {
+				nh_pfx.family = AF_INET;
+				nh_pfx.prefixlen = IPV4_MAX_BITLEN;
+				nh_pfx.u.prefix4 = ctx.nh4;
+				pnc_afi = AFI_IP;
+			} else {
+				nh_pfx.family = AF_INET6;
+				nh_pfx.prefixlen = IPV6_MAX_BITLEN;
+				nh_pfx.u.prefix6 = ctx.nh6;
+				pnc_afi = AFI_IP6;
+			}
+
+			pnc_tree = &bgp_vrf->srv6_sids_per_nexthop[pnc_afi];
+			bsnc = bgp_srv6_per_nexthop_find(pnc_tree, &nh_pfx);
+			if (bsnc) {
+				if (BGP_DEBUG(vpn, VPN_LEAK_LABEL))
+					zlog_debug("%s: per-CE SRv6 SID released for nexthop %pFX VRF %s",
+						   __func__, &nh_pfx,
+						   bgp_vrf->name_pretty);
+
+				/* Withdraw the local route */
+				bgp_srv6_per_nexthop_localsid(bsnc, false);
+				sid_unregister(bgp, &bsnc->sid);
+				bsnc->sid_valid = false;
+				memset(&bsnc->sid, 0, sizeof(bsnc->sid));
+			}
+			break;
+		}
 
 		/* Un-export VPN to VRF routes */
 		vpn_leak_prechange(BGP_VPN_POLICY_DIR_TOVPN, AFI_IP, bgp,

@@ -31,6 +31,8 @@ PREDECL_LIST(zebra_l2_vni);
 #include "bitfield.h"
 #include "vxlan.h"
 #include "bgp_labelpool.h"
+#include "bgp_srv6_per_nexthop.h"
+#include "bgp_srv6_per_prefix.h"
 #include "bgp_addpath_types.h"
 #include "bgp_nexthop.h"
 #include "bgp_io.h"
@@ -295,6 +297,7 @@ struct vpn_policy {
 /* Is this value set by the cli? */
 #define BGP_VPN_POLICY_TOVPN_RD_CLI_SET       (1 << 7)
 #define BGP_VPN_POLICY_TOVPN_SID_FUNC_WIDE    (1 << 8)
+#define BGP_VPN_POLICY_TOVPN_SID_PER_CE       (1 << 9)
 
 	/*
 	 * If we are importing another vrf into us keep a list of
@@ -823,11 +826,18 @@ struct bgp {
 	struct bgp_label_per_nexthop_cache_head
 		mpls_labels_per_nexthop[AFI_MAX];
 
-	/* Tree for mplsvpn next-hop label bind cache */
-	struct bgp_mplsvpn_nh_label_bind_cache_head mplsvpn_nh_label_bind;
+	/* Tree for SRv6 per-CE (per-nexthop) SID cache. */
+	struct bgp_srv6_per_nexthop_cache_head
+		srv6_sids_per_nexthop[AFI_MAX];
+
+        /* Tree for mplsvpn next-hop label bind cache */
+        struct bgp_mplsvpn_nh_label_bind_cache_head mplsvpn_nh_label_bind;
+
+	/* Tree for SRv6 per-prefix explicit SID config (per AFI). */
+	struct bgp_srv6_per_prefix_sid_head srv6_sids_per_prefix[AFI_MAX];
 
 	/* Allocate hash entries to store policy routing information
-	 * The hash are used to host pbr rules somewhere.
+         * The hash are used to host pbr rules somewhere.
 	 * Actually, pbr will only be used by flowspec
 	 * those hash elements will have relationship together as
 	 * illustrated in below diagram:

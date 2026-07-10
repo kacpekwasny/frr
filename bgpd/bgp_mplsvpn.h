@@ -373,6 +373,14 @@ static inline bool is_pi_srv6_valid(struct bgp_path_info *pi, struct bgp *bgp_ne
 	if (safi == SAFI_UNICAST)
 		return true;
 
+	/*
+	 * Per-prefix explicit SID (End.DX4/DX6): the SID was already embedded
+	 * in the L3-service TLV by vpn_leak_from_vrf_fill_srv6_per_prefix().
+	 * The route is SRv6-valid regardless of any per-VRF SID configuration.
+	 */
+	if (pi->attr->srv6_l3service)
+		return true;
+
 	if (bgp_nexthop->vpn_policy[afi].tovpn_sid == NULL && bgp_nexthop->tovpn_sid == NULL)
 		return false;
 

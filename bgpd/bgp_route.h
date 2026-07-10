@@ -18,6 +18,7 @@
 
 struct bgp_nexthop_cache;
 struct bgp_route_evpn;
+struct bgp_srv6_per_nexthop_cache;
 
 enum bgp_show_type {
 	bgp_show_type_normal,
@@ -261,6 +262,9 @@ struct bgp_mplsvpn_label_nh {
 
 	/* Back pointer to the bgp label per nexthop structure */
 	struct bgp_label_per_nexthop_cache *label_nexthop_cache;
+
+	/* Back pointer to the SRv6 per-CE nexthop cache */
+	struct bgp_srv6_per_nexthop_cache *label_nexthop_cache_srv6;
 };
 
 struct bgp_mplsvpn_nh_label_bind {
@@ -332,6 +336,7 @@ struct bgp_path_info {
 #define BGP_PATH_ACCEPT_OWN (1 << 16)
 #define BGP_PATH_MPLSVPN_LABEL_NH (1 << 17)
 #define BGP_PATH_MPLSVPN_NH_LABEL_BIND (1 << 18)
+#define BGP_PATH_SRV6_SID_PER_CE (1 << 21)
 #define BGP_PATH_UNSORTED (1 << 19)
 /*
  * BGP_PATH_MULTIPATH_NEW is set on those bgp_path_info

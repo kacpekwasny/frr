@@ -3736,6 +3736,13 @@ peer_init:
 		bgp_label_per_nexthop_cache_init(
 			&bgp->mpls_labels_per_nexthop[afi]);
 
+	for (afi = AFI_IP; afi < AFI_MAX; afi++)
+		bgp_srv6_per_nexthop_cache_init(
+			&bgp->srv6_sids_per_nexthop[afi]);
+
+	for (afi = AFI_IP; afi < AFI_MAX; afi++)
+		bgp_srv6_per_prefix_sid_init(&bgp->srv6_sids_per_prefix[afi]);
+
 	bgp_mplsvpn_nh_label_bind_cache_init(&bgp->mplsvpn_nh_label_bind);
 
 	if (name && !bgp->name)
@@ -4254,6 +4261,9 @@ int bgp_delete(struct bgp *bgp)
 
 		/* SRv6 unicast */
 		bgp_srv6_unicast_delete(bgp_default, afi);
+
+		/* SRv6 per-prefix explicit SIDs: withdraw localsids and free */
+		bgp_srv6_per_prefix_sids_cleanup(bgp, afi);
 	}
 
 	/* release auto vpn labels */
@@ -9249,6 +9259,7 @@ void bgp_init(unsigned short instance)
 	bgp_lp_vty_init();
 
 	bgp_label_per_nexthop_init();
+	bgp_srv6_per_nexthop_init();
 	bgp_mplsvpn_nexthop_init();
 
 	cmd_variable_handler_register(bgp_viewvrf_var_handlers);

@@ -80,6 +80,8 @@ bgpd_libbgp_a_SOURCES = \
 	bgpd/bgp_nhg.c \
 	bgpd/bgp_nhc.c \
 	bgpd/bgp_srv6.c \
+	bgpd/bgp_srv6_per_nexthop.c \
+	bgpd/bgp_srv6_per_prefix.c \
 	# end
 
 if ENABLE_BGP_VNC
@@ -166,6 +168,8 @@ noinst_HEADERS += \
 	bgpd/bgp_nhg.h \
 	bgpd/bgp_attr_srv6.h \
 	bgpd/bgp_srv6.h \
+	bgpd/bgp_srv6_per_nexthop.h \
+	bgpd/bgp_srv6_per_prefix.h \
 	\
 	bgpd/rfapi/bgp_rfapi_cfg.h \
 	bgpd/rfapi/rfapi_import.h \
