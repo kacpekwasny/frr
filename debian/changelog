@@ -1,3 +1,9 @@
+frr (10.6.1-7) unstable; urgency=medium
+
+  * PR #25: zebra: clear queued bit on VRF meta-queue flush
+
+ -- Dawid Kopec <dkopec@akamai.com>  Fri, 10 Jul 2026 13:30:54 +0000
+
 frr (10.6.1-6) unstable; urgency=medium
 
   * PR #24: bgpd: withdraw VRF-leaked routes on GR stale timer for all
