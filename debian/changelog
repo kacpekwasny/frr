@@ -1,3 +1,10 @@
+frr (10.6.1-8) unstable; urgency=medium
+
+  * PR #27: ROSE-4442: EVPN/VXLAN: per-VNI L3VNI demotion + EVPN GR
+    completion fixes
+
+ -- Dawid Kopec <dkopec@akamai.com>  Tue, 14 Jul 2026 07:17:45 +0000
+
 frr (10.6.1-7) unstable; urgency=medium
 
   * PR #25: zebra: clear queued bit on VRF meta-queue flush
