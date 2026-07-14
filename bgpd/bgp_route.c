@@ -4594,6 +4594,7 @@ void bgp_do_deferred_path_selection(struct bgp *bgp, afi_t afi, safi_t safi)
 	if (afi == AFI_L2VPN && safi == SAFI_EVPN) {
 		struct bgp_dest *rd_dest = NULL;
 		struct bgp_table *table = NULL;
+		uint32_t deferred_before = bgp->gr_info[afi][safi].gr_deferred;
 
 		/*
 		 * Calculate bestpaths for all the RDs in global EVPN table
@@ -4623,6 +4624,33 @@ void bgp_do_deferred_path_selection(struct bgp *bgp, afi_t afi, safi_t safi)
 		 * the L2VNIs
 		 */
 		bgp_evpn_handle_deferred_bestpath_for_vnis(bgp, cnt);
+
+		/*
+		 * No-forward-progress backstop.
+		 *
+		 * bgp_deferred_path_selection() only decrements gr_deferred
+		 * when it finds a dest still carrying BGP_NODE_SELECT_DEFER in
+		 * one of the walked tables (the global EVPN RD tables above and
+		 * every VNI IP/MAC table in the VNI hash). If a full pass leaves
+		 * gr_deferred unchanged and non-zero, the counter is tracking
+		 * deferred dests that are no longer reachable through any of
+		 * those tables (e.g. routes left deferred on a VNI table that
+		 * has since been detached from the VNI hash). In that state the
+		 * route-select timer below reschedules every second forever:
+		 * L2VPN EVPN GR never completes, route_sync_tier2 is never set,
+		 * and deferred IPv4/IPv6 unicast routes imported into tenant
+		 * VRFs are never installed. Clear the leaked count so GR can
+		 * complete.
+		 */
+		if (bgp->gr_info[afi][safi].gr_deferred &&
+		    bgp->gr_info[afi][safi].gr_deferred == deferred_before) {
+			if (BGP_DEBUG(graceful_restart, GRACEFUL_RESTART))
+				zlog_debug("%s: Clearing %u stale deferred route(s) for %s with no reachable deferred dests; forcing GR deferral completion",
+					   bgp->name_pretty,
+					   bgp->gr_info[afi][safi].gr_deferred,
+					   get_afi_safi_str(afi, safi, false));
+			bgp->gr_info[afi][safi].gr_deferred = 0;
+		}
 
 		/*
 		 * Trigger deferred bestpath calculation for IPv4 and IPv6

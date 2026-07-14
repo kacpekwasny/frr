@@ -2550,6 +2550,28 @@ static int zebra_vxlan_handle_vni_transition(struct zebra_vrf *zvrf, vni_t vni,
 			return 0;
 
 		zif = ctx.ret_ifp->info;
+
+		/*
+		 * The L3-VNI -> L2-VNI demotion is only meaningful for a
+		 * single VxLAN device (SVD), where one netdev carries many
+		 * VNIs and a given VNI can legitimately switch between L3 and
+		 * L2 depending on its VRF<->VNI mapping.
+		 *
+		 * For a traditional per-VNI VxLAN device the netdev is
+		 * dedicated to a single VNI and its role (L2 vs L3) is driven
+		 * entirely by the kernel/netlink interface path
+		 * (zebra_vxlan_if_add_vni()). Auto-demoting such a device to an
+		 * L2-VNI on removal of the VRF<->VNI mapping creates a bogus
+		 * L2-VNI (stale MACs/neighbors, zero-RMAC type-3) that cannot
+		 * be rebuilt as an L3-VNI without a daemon restart. Skip it.
+		 */
+		if (!IS_ZEBRA_VXLAN_IF_SVD(zif)) {
+			if (IS_ZEBRA_DEBUG_VXLAN)
+				zlog_debug("Skip L3-VNI %u -> L2-VNI demotion on non-SVD vxlan_if %s",
+					   vni, ctx.ret_ifp->name);
+			return 0;
+		}
+
 		vnip = ctx.vnip;
 		vxl = &zif->l2info.vxl;
 
