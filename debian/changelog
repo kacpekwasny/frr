@@ -1,3 +1,9 @@
+frr (10.3.3-5) unstable; urgency=medium
+
+  * PR #30: chore: show version command should show the full version
+
+ -- Piotr Suchy <psuchy@akamai.com>  Wed, 12 Aug 2025 15:20:00 +0200
+
 frr (10.3.3-4) unstable; urgency=medium
 
   * PR #26: bgpd: fix double-free of borrowed EVPN overlay in

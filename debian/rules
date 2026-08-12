@@ -44,10 +44,20 @@ export PYTHON=python3
 %:
 	dh $@ -Bbuild --with=sphinxdoc
 
+# Report the full package version (upstream + Debian/Akamai revision) in
+# `show version` instead of just the bare upstream version. The revision is
+# whatever the changelog carries after the upstream version, e.g. for
+# "10.6.1-8+123.abcd1234-deb11u1" this yields "-8+123.abcd1234-deb11u1", which
+# FRR appends to PACKAGE_VERSION via its EXTRAVERSION mechanism. Derived from
+# the changelog so it stays in sync automatically across branches and CI modes.
+DEB_PKG_VERSION   := $(shell dpkg-parsechangelog -SVersion)
+FRR_EXTRA_VERSION := $(shell printf '%s' "$(DEB_PKG_VERSION)" | sed 's/^[^-]*-/-/')
+
 override_dh_auto_configure:
 	$(shell dpkg-buildflags --export=sh); \
 	dh_auto_configure -- \
 		--sbindir=/usr/lib/frr \
+		--with-pkg-extra-version=$(FRR_EXTRA_VERSION) \
 		--with-vtysh-pager=/usr/bin/pager \
 		--libdir=/usr/lib/$(DEB_HOST_MULTIARCH)/frr \
 		--with-moduledir=/usr/lib/$(DEB_HOST_MULTIARCH)/frr/modules \
