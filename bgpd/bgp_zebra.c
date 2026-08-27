@@ -15,6 +15,7 @@
 #include "zclient.h"
 #include "routemap.h"
 #include "frrevent.h"
+#include "hash.h"
 #include "queue.h"
 #include "memory.h"
 #include "lib/json.h"
@@ -2513,6 +2514,31 @@ int bgp_zebra_advertise_gw_macip(struct bgp *bgp, int advertise, vni_t vni)
 	return zclient_send_message(zclient);
 }
 
+static void bgp_zebra_replay_gw_macip_vni(struct hash_bucket *bucket,
+					  void *arg)
+{
+	struct bgpevpn *vpn = bucket->data;
+	struct bgp *bgp = arg;
+
+	bgp_zebra_advertise_gw_macip(bgp, vpn->advertise_gw_macip, vpn->vni);
+}
+
+static void bgp_zebra_replay_gw_macip(struct bgp *bgp)
+{
+	if (!bgp->evpn_info)
+		return;
+
+	/* Reconcile zebra with the persisted global setting first. */
+	bgp_zebra_advertise_gw_macip(bgp, bgp->advertise_gw_macip, 0);
+
+	/* Reconcile explicit per-VNI settings after the global setting. */
+	if (bgp->vnihash)
+		hash_iterate(
+			bgp->vnihash,
+			bgp_zebra_replay_gw_macip_vni,
+			bgp);
+}
+
 int bgp_zebra_vxlan_flood_control(struct bgp *bgp,
 				  enum vxlan_flood_control flood_ctrl)
 {
@@ -3069,21 +3095,24 @@ static void bgp_encode_pbr_iptable_match(struct stream *s,
 static void bgp_zebra_connected(struct zclient *zclient)
 {
 	struct bgp *bgp;
+	struct listnode *node;
 
 	zclient_num_connects++; /* increment even if not responding */
 
 	/* Send the client registration */
 	bfd_client_sendmsg(zclient, ZEBRA_BFD_CLIENT_REGISTER, VRF_DEFAULT);
 
-	/* At this point, we may or may not have BGP instances configured, but
-	 * we're only interested in the default VRF (others wouldn't have learnt
-	 * the VRF from Zebra yet.)
-	 */
+	for (ALL_LIST_ELEMENTS_RO(bm->bgp, node, bgp)) {
+		if (!IS_BGP_INST_KNOWN_TO_ZEBRA(bgp))
+			continue;
+
+		bgp_zebra_instance_register(bgp);
+		bgp_zebra_replay_gw_macip(bgp);
+	}
+
 	bgp = bgp_get_default();
 	if (!bgp)
 		return;
-
-	bgp_zebra_instance_register(bgp);
 
 	/* TODO - What if we have peers and networks configured, do we have to
 	 * kick-start them?
