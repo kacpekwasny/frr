@@ -1,3 +1,11 @@
+frr (10.6.1-11) unstable; urgency=medium
+
+  * bgpd: don't emit "no neighbor X capability link-local" for unnumbered
+    peers (cherry-picked from FRRouting PR #22540 / stable/10.6 backport
+    PR #22665)
+
+ -- Mateusz Warzecha <mwarzech@akamai.com>  Mon, 31 Aug 2026 16:28:51 +0200
+
 frr (10.6.1-10) unstable; urgency=medium
 
   * bgpd: replay EVPN default-gateway state after zebra reconnect
