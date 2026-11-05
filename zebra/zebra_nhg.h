@@ -173,6 +173,14 @@ struct nhg_hash_entry {
 #define NEXTHOP_GROUP_INITIAL_DELAY_INSTALL (1 << 9)
 
 #define NEXTHOP_GROUP_RECEIVED_FROM_EXTERNAL (1 << 10)
+
+/*
+ * The last install attempt was rejected by the kernel with ENOMEM.
+ * That is a transient condition (e.g. the per-CPU atomic pool used by
+ * seg6 encap ran dry), so routes using this NHG are retried later.
+ * Cleared when an install succeeds.
+ */
+#define NEXTHOP_GROUP_INSTALL_NOMEM (1 << 11)
 };
 
 /* Upper 4 bits of the NHG are reserved for indicating the NHG type */
@@ -386,6 +394,7 @@ extern uint16_t zebra_nhg_nhe2grp(struct nh_grp *grp, struct nhg_hash_entry *nhe
 
 /* Dataplane install/uninstall */
 extern void zebra_nhg_install_kernel(struct nhg_hash_entry *nhe, uint8_t type);
+extern bool zebra_nhg_install_failed_nomem(const struct nhg_hash_entry *nhe);
 extern void zebra_nhg_uninstall_kernel(struct nhg_hash_entry *nhe);
 extern void zebra_interface_nhg_reinstall(struct interface *ifp);
 

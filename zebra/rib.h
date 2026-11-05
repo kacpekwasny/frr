@@ -156,6 +156,12 @@ struct route_entry {
 	/* Sequence value incremented for each dataplane operation */
 	uint32_t dplane_sequence;
 
+	/*
+	 * Consecutive installs that failed with ENOMEM, used to back off
+	 * the retries. Reset when the route is installed.
+	 */
+	uint8_t install_retries;
+
 	/* Source protocol instance */
 	uint16_t instance;
 

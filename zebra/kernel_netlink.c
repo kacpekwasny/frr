@@ -1253,9 +1253,13 @@ static int nl_batch_read_resp(struct nl_batch *bth, struct nlsock *nl)
 			int err = netlink_parse_error(nl, h, bth->zns->is_cmd,
 						      false);
 
-			if (err == -1)
+			if (err == -1) {
+				struct nlmsgerr *nlerr = NLMSG_DATA(h);
+
 				dplane_ctx_set_status(
 					ctx, ZEBRA_DPLANE_REQUEST_FAILURE);
+				dplane_ctx_set_kernel_errno(ctx, -nlerr->error);
+			}
 
 			if (IS_ZEBRA_DEBUG_KERNEL)
 				zlog_debug("%s: netlink error message seq=%d ",

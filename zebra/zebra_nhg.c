@@ -3500,6 +3500,26 @@ void zebra_nhg_install_kernel(struct nhg_hash_entry *nhe, uint8_t type)
 	}
 }
 
+/*
+ * Did the kernel reject this NHG, or any NHG it depends on, with ENOMEM?
+ * A route using such an NHG failed for a transient reason and is worth
+ * retrying.
+ */
+bool zebra_nhg_install_failed_nomem(const struct nhg_hash_entry *nhe)
+{
+	const struct nhg_connected *rb_node_dep;
+
+	if (CHECK_FLAG(nhe->flags, NEXTHOP_GROUP_INSTALL_NOMEM))
+		return true;
+
+	frr_each (nhg_connected_tree_const, &nhe->nhg_depends, rb_node_dep) {
+		if (zebra_nhg_install_failed_nomem(rb_node_dep->nhe))
+			return true;
+	}
+
+	return false;
+}
+
 void zebra_nhg_uninstall_kernel(struct nhg_hash_entry *nhe)
 {
 	/*
@@ -3575,6 +3595,7 @@ void zebra_nhg_dplane_result(struct zebra_dplane_ctx *ctx)
 
 		UNSET_FLAG(nhe->flags, NEXTHOP_GROUP_QUEUED);
 		UNSET_FLAG(nhe->flags, NEXTHOP_GROUP_REINSTALL);
+		UNSET_FLAG(nhe->flags, NEXTHOP_GROUP_INSTALL_NOMEM);
 		switch (status) {
 		case ZEBRA_DPLANE_REQUEST_SUCCESS:
 			SET_FLAG(nhe->flags, NEXTHOP_GROUP_INSTALLED);
@@ -3594,6 +3615,9 @@ void zebra_nhg_dplane_result(struct zebra_dplane_ctx *ctx)
 			 * or even what those versions were.  So at this point
 			 * we cannot unset the INSTALLED flag.
 			 */
+			if (dplane_ctx_get_kernel_errno(ctx) == ENOMEM)
+				SET_FLAG(nhe->flags, NEXTHOP_GROUP_INSTALL_NOMEM);
+
 			/* If daemon nhg, send it an update */
 			if (PROTO_OWNED(nhe))
 				zsend_nhg_notify(nhe->type, nhe->zapi_instance,

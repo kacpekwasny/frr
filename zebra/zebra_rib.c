@@ -59,6 +59,7 @@ DEFINE_MTYPE(ZEBRA, RE,       "Route Entry");
 DEFINE_MTYPE_STATIC(ZEBRA, RIB_DEST,       "RIB destination");
 DEFINE_MTYPE_STATIC(ZEBRA, RIB_UPDATE_CTX, "Rib update context object");
 DEFINE_MTYPE_STATIC(ZEBRA, WQ_WRAPPER, "WQ wrapper");
+DEFINE_MTYPE_STATIC(ZEBRA, RIB_INSTALL_RETRY, "RIB install retry");
 
 /*
  * Event, list, and mutex for delivery of dataplane results
@@ -1838,6 +1839,129 @@ done:
 	return rn;
 }
 
+/*
+ * Retry of route installs that failed because the kernel ran out of memory.
+ *
+ * The kernel can reject nexthops with ENOMEM for a short time, e.g. when a
+ * burst of seg6 encap nexthops drains the per-CPU atomic pool. Nothing else
+ * sends such a route again, so it would stay out of the FIB until some
+ * unrelated update for its prefix arrives. Instead, remember the prefix and
+ * re-process it after a backoff. Re-processing goes through
+ * zebra_nhg_install_kernel(), which re-sends every not-installed NHG the
+ * route depends on, and then re-sends the route.
+ *
+ * Pending retries are kept by table and prefix, not by route_node, so a
+ * table or VRF deleted in the meantime is simply not found.
+ */
+#define RIB_INSTALL_RETRY_DELAY_MIN_MS 1000
+#define RIB_INSTALL_RETRY_DELAY_MAX_MS 30000
+
+struct rib_install_retry {
+	afi_t afi;
+	safi_t safi;
+	vrf_id_t vrf_id;
+	uint32_t table_id;
+	struct prefix p;
+	struct prefix_ipv6 src_p;
+};
+
+static struct list *rib_install_retry_list;
+static struct event *t_rib_install_retry;
+
+/* Did this route fail to install because the kernel ran out of memory? */
+static bool rib_install_failed_nomem(const struct zebra_dplane_ctx *ctx,
+				     const struct route_entry *re)
+{
+	return dplane_ctx_get_kernel_errno(ctx) == ENOMEM ||
+	       zebra_nhg_install_failed_nomem(re->nhe);
+}
+
+/* Re-process the route if it is still selected and still not installed */
+static void rib_install_retry_one(const struct rib_install_retry *retry)
+{
+	struct route_table *table;
+	struct route_node *rn;
+	rib_dest_t *dest;
+	struct route_entry *re;
+
+	table = zebra_vrf_lookup_table_with_table_id(retry->afi, retry->safi, retry->vrf_id,
+						     retry->table_id);
+	if (!table)
+		return;
+
+	rn = srcdest_rnode_lookup(table, &retry->p, &retry->src_p);
+	if (!rn)
+		return;
+
+	dest = rib_dest_from_rnode(rn);
+	re = dest ? dest->selected_fib : NULL;
+	if (re && CHECK_FLAG(re->status, ROUTE_ENTRY_FAILED) &&
+	    !CHECK_FLAG(re->status, ROUTE_ENTRY_QUEUED)) {
+		if (IS_ZEBRA_DEBUG_RIB)
+			zlog_debug("%s(%u:%u):%pRN: retrying route install, attempt %u",
+				   vrf_id_to_name(retry->vrf_id), retry->vrf_id, retry->table_id,
+				   rn, re->install_retries);
+
+		SET_FLAG(re->status, ROUTE_ENTRY_CHANGED);
+		rib_queue_add(rn);
+	}
+
+	route_unlock_node(rn);
+}
+
+static void rib_install_retry_free(void *retry)
+{
+	XFREE(MTYPE_RIB_INSTALL_RETRY, retry);
+}
+
+static void rib_install_retry_run(struct event *event)
+{
+	struct listnode *node;
+	struct rib_install_retry *retry;
+
+	for (ALL_LIST_ELEMENTS_RO(rib_install_retry_list, node, retry))
+		rib_install_retry_one(retry);
+
+	list_delete_all_node(rib_install_retry_list);
+}
+
+/*
+ * Schedule a retry of a route whose install failed with ENOMEM.
+ *
+ * The delay doubles with each consecutive failure of the same route, up to
+ * RIB_INSTALL_RETRY_DELAY_MAX_MS. All pending routes are retried together:
+ * a route that fails while the timer is running joins the pending batch.
+ */
+static void rib_install_retry_schedule(const struct zebra_dplane_ctx *ctx,
+				       struct route_entry *re)
+{
+	struct rib_install_retry *retry;
+	const struct prefix *src_p = dplane_ctx_get_src(ctx);
+	unsigned int shift;
+	unsigned long delay_ms;
+
+	if (re->install_retries < UINT8_MAX)
+		re->install_retries++;
+
+	retry = XCALLOC(MTYPE_RIB_INSTALL_RETRY, sizeof(*retry));
+	retry->afi = dplane_ctx_get_afi(ctx);
+	retry->safi = dplane_ctx_get_safi(ctx);
+	retry->vrf_id = dplane_ctx_get_vrf(ctx);
+	retry->table_id = dplane_ctx_get_table(ctx);
+	prefix_copy(&retry->p, dplane_ctx_get_dest(ctx));
+	if (src_p)
+		prefix_copy(&retry->src_p, src_p);
+	listnode_add(rib_install_retry_list, retry);
+
+	if (event_is_scheduled(t_rib_install_retry))
+		return;
+
+	/* 1s, 2s, 4s, ... capped at RIB_INSTALL_RETRY_DELAY_MAX_MS */
+	shift = MIN(re->install_retries - 1, 5);
+	delay_ms = MIN(RIB_INSTALL_RETRY_DELAY_MIN_MS << shift, RIB_INSTALL_RETRY_DELAY_MAX_MS);
+	event_add_timer_msec(zrouter.master, rib_install_retry_run, NULL, delay_ms,
+			     &t_rib_install_retry);
+}
 
 /*
  * Route-update results processing after async dataplane update.
@@ -1964,6 +2088,7 @@ static void rib_process_result(struct zebra_dplane_ctx *ctx)
 			if (re) {
 				UNSET_FLAG(re->status, ROUTE_ENTRY_FAILED);
 				SET_FLAG(re->status, ROUTE_ENTRY_INSTALLED);
+				re->install_retries = 0;
 			}
 			/*
 			 * On an update operation from the same route type
@@ -2059,6 +2184,9 @@ static void rib_process_result(struct zebra_dplane_ctx *ctx)
 			zlog_warn("%s(%u:%u):%pRN: Route install failed",
 				  VRF_LOGNAME(vrf), dplane_ctx_get_vrf(ctx),
 				  dplane_ctx_get_table(ctx), rn);
+
+			if (re && rib_install_failed_nomem(ctx, re))
+				rib_install_retry_schedule(ctx, re);
 		}
 	} else if (op == DPLANE_OP_ROUTE_DELETE) {
 		rt_delete = true;
@@ -5164,6 +5292,9 @@ void zebra_rib_init(void)
 	pthread_mutex_init(&dplane_mutex, NULL);
 	dplane_ctx_q_init(&rib_dplane_q);
 	zebra_dplane_init(rib_dplane_results);
+
+	rib_install_retry_list = list_new();
+	rib_install_retry_list->del = rib_install_retry_free;
 }
 
 void zebra_rib_terminate(void)
@@ -5171,6 +5302,9 @@ void zebra_rib_terminate(void)
 	struct zebra_dplane_ctx *ctx;
 
 	event_cancel(&t_dplane);
+
+	event_cancel(&t_rib_install_retry);
+	list_delete(&rib_install_retry_list);
 
 	ctx = dplane_ctx_dequeue(&rib_dplane_q);
 	while (ctx) {
